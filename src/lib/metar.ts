@@ -1,4 +1,5 @@
 export const METAR_FETCH_ERROR = 'Unable to retrieve a METAR for that airport right now.'
+export const METAR_NOT_FOUND_ERROR = 'No current METAR found for that airport.'
 
 const COVER_LABELS: Record<string, string> = {
   CLR: 'Clear',
@@ -104,6 +105,10 @@ export function summarizeFlightCategory(category: string | null) {
 export function mapNoaaMetarResponse(records: NoaaMetarRecord[]) {
   const report = records[0]
 
+  if (!report) {
+    throw new Error(METAR_NOT_FOUND_ERROR)
+  }
+
   if (!report?.icaoId || !report.rawOb || !report.reportTime || report.lat === undefined || report.lon === undefined) {
     throw new Error(METAR_FETCH_ERROR)
   }
@@ -197,11 +202,12 @@ function formatAltimeter(value: NullableNumber) {
     }
   }
 
-  const inHg = Math.round((value * 0.0295299830714) * 100) / 100
+  const hpa = Math.round(value * 10) / 10
+  const inHg = Math.round((hpa * 0.0295299830714) * 100) / 100
   return {
-    hpa: value,
+    hpa,
     inHg,
-    text: `${value.toFixed(1)} hPa / ${inHg.toFixed(2)} inHg`,
+    text: `${hpa.toFixed(1)} hPa / ${inHg.toFixed(2)} inHg`,
   }
 }
 

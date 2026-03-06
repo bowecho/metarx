@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mapNoaaMetarResponse, normalizeAirportCode } from './metar'
+import { mapNoaaMetarResponse, METAR_NOT_FOUND_ERROR, normalizeAirportCode } from './metar'
 
 describe('normalizeAirportCode', () => {
   it('keeps only letters, uppercases them, and trims to four characters', () => {
@@ -36,6 +36,7 @@ describe('mapNoaaMetarResponse', () => {
     expect(result.decoded.cloudsText).toContain('Overcast at 600 ft')
     expect(result.decoded.weather.text).toBe('Light drizzle, Mist')
     expect(result.decoded.altimeter.text).toContain('1023.5 hPa')
+    expect(result.decoded.altimeter.text).toContain('30.22 inHg')
     expect(result.decoded.remarksSummary).toBe('automated station with precipitation discriminator')
     expect(result.decoded.remarksItems).toEqual([
       'automated station with precipitation discriminator',
@@ -75,5 +76,9 @@ describe('mapNoaaMetarResponse', () => {
     expect(result.decoded.remarksSummary).toContain(
       'exact temperature 5.6°C, dew point 5.0°C',
     )
+  })
+
+  it('throws a distinct not-found error for empty NOAA responses', () => {
+    expect(() => mapNoaaMetarResponse([])).toThrow(METAR_NOT_FOUND_ERROR)
   })
 })

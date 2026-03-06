@@ -1,22 +1,53 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap');
 
 :root {
-  --bg:
-    radial-gradient(circle at top left, rgba(90, 182, 255, 0.18), transparent 26%),
-    radial-gradient(circle at bottom right, rgba(94, 240, 201, 0.16), transparent 24%),
-    linear-gradient(160deg, #f5f9ff 0%, #edf3ff 40%, #f9fbff 100%);
-  --surface: rgba(255, 255, 255, 0.74);
-  --surface-strong: rgba(255, 255, 255, 0.86);
-  --border: rgba(9, 29, 52, 0.1);
-  --border-strong: rgba(9, 29, 52, 0.18);
-  --line-color: rgba(19, 74, 141, 0.08);
-  --shadow-card: 0 18px 60px rgba(28, 61, 114, 0.12);
-  --text: #0d1a2d;
-  --text-soft: #40506b;
-  --muted: #687892;
-  --accent: #3fd5ff;
-  --accent-secondary: #61f0c9;
-  --danger: #f76b8d;
+  /* Base surfaces */
+  --bg: #030a12;
+  --panel: rgba(8, 18, 30, 0.92);
+  --panel-strong: rgba(12, 24, 38, 0.98);
+  --panel-inset: rgba(4, 12, 22, 0.96);
+  --panel-elevated: rgba(16, 30, 46, 0.94);
+  --briefing: rgba(10, 22, 36, 0.96);
+  --readout: rgba(4, 12, 22, 0.98);
+
+  /* Borders */
+  --border: rgba(100, 160, 220, 0.12);
+  --border-strong: rgba(120, 180, 240, 0.18);
+
+  /* Shadows */
+  --shadow-card: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+  /* Text */
+  --text: #e8f0f8;
+  --text-soft: #8ea4b8;
+  --muted: #5a7a94;
+
+  /* Accent colors — electric neons */
+  --accent-primary: #00d4ff;
+  --accent-violet: #7c5cff;
+  --accent-green: #00ff94;
+  --accent-amber: #ffd000;
+  --accent-red: #ff3366;
+
+  /* Legacy compat aliases */
+  --accent: var(--accent-primary);
+  --accent-secondary: var(--accent-green);
+  --signal: var(--accent-amber);
+  --danger: var(--accent-red);
+
+  /* Glow tokens */
+  --glow-cyan: 0 0 20px rgba(0, 212, 255, 0.3);
+  --glow-violet: 0 0 20px rgba(124, 92, 255, 0.3);
+  --glow-success: 0 0 20px rgba(0, 255, 148, 0.3);
+  --glow-amber: 0 0 20px rgba(255, 208, 0, 0.3);
+  --glow-danger: 0 0 20px rgba(255, 51, 102, 0.3);
+
+  /* Flight category colors */
+  --cat-vfr: #00ff94;
+  --cat-mvfr: #00d4ff;
+  --cat-ifr: #ffa040;
+  --cat-lifr: #ff3366;
+
   color: var(--text);
   font-family: 'Space Grotesk', 'Trebuchet MS', sans-serif;
   font-synthesis: none;
@@ -25,25 +56,45 @@
   text-rendering: optimizeLegibility;
   -moz-osx-font-smoothing: grayscale;
   -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
 }
 
-:root[data-theme='dark'] {
-  --bg:
-    radial-gradient(circle at top left, rgba(68, 189, 255, 0.18), transparent 24%),
-    radial-gradient(circle at bottom right, rgba(78, 235, 178, 0.16), transparent 28%),
-    linear-gradient(160deg, #07111b 0%, #0a1422 42%, #08111d 100%);
-  --surface: rgba(13, 24, 40, 0.72);
-  --surface-strong: rgba(13, 24, 40, 0.9);
-  --border: rgba(160, 213, 255, 0.12);
-  --border-strong: rgba(160, 213, 255, 0.24);
-  --line-color: rgba(111, 186, 255, 0.08);
-  --shadow-card: 0 22px 70px rgba(0, 0, 0, 0.32);
-  --text: #eff6ff;
-  --text-soft: #adc2dd;
-  --muted: #7d95b3;
-  --accent: #49c8ff;
-  --accent-secondary: #75f4c4;
-  --danger: #ff7b95;
+:root[data-theme='light'] {
+  --bg: #f0f4f8;
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel-strong: rgba(248, 250, 252, 0.98);
+  --panel-inset: rgba(235, 240, 248, 0.96);
+  --panel-elevated: rgba(255, 255, 255, 0.96);
+  --briefing: rgba(245, 248, 252, 0.96);
+  --readout: rgba(232, 238, 246, 0.98);
+
+  --border: rgba(20, 50, 80, 0.12);
+  --border-strong: rgba(20, 50, 80, 0.18);
+
+  --shadow-card: 0 8px 32px rgba(20, 40, 80, 0.1);
+
+  --text: #0a1628;
+  --text-soft: #4a6280;
+  --muted: #6a849c;
+
+  --accent-primary: #0098cc;
+  --accent-violet: #5a3ed8;
+  --accent-green: #00a860;
+  --accent-amber: #cc9800;
+  --accent-red: #d42050;
+
+  --glow-cyan: 0 0 16px rgba(0, 152, 204, 0.15);
+  --glow-violet: 0 0 16px rgba(90, 62, 216, 0.15);
+  --glow-success: 0 0 16px rgba(0, 168, 96, 0.15);
+  --glow-amber: 0 0 16px rgba(204, 152, 0, 0.15);
+  --glow-danger: 0 0 16px rgba(212, 32, 80, 0.15);
+
+  --cat-vfr: #00a860;
+  --cat-mvfr: #0098cc;
+  --cat-ifr: #cc7a00;
+  --cat-lifr: #d42050;
+
+  color-scheme: light;
 }
 
 * {
@@ -59,6 +110,7 @@ body {
   margin: 0;
   min-height: 100vh;
   min-width: 320px;
+  transition: background-color 0.3s ease;
 }
 
 body,

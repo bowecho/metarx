@@ -1,4 +1,10 @@
-import { mapNoaaMetarResponse, METAR_FETCH_ERROR, normalizeAirportCode, type NoaaMetarRecord } from '../src/lib/metar'
+import {
+  mapNoaaMetarResponse,
+  METAR_FETCH_ERROR,
+  METAR_NOT_FOUND_ERROR,
+  normalizeAirportCode,
+  type NoaaMetarRecord,
+} from '../src/lib/metar'
 
 type RequestLike = {
   method?: string
@@ -38,6 +44,11 @@ export default async function handler(request: RequestLike, response: ResponseLi
       `https://aviationweather.gov/api/data/metar?ids=${airportCode}&format=json`,
     )
 
+    if (upstreamResponse.status === 204) {
+      response.status(404).json({ error: METAR_NOT_FOUND_ERROR })
+      return
+    }
+
     if (!upstreamResponse.ok) {
       throw new Error(METAR_FETCH_ERROR)
     }
@@ -45,7 +56,12 @@ export default async function handler(request: RequestLike, response: ResponseLi
     const payload = (await upstreamResponse.json()) as NoaaMetarRecord[]
     const metar = mapNoaaMetarResponse(payload)
     response.status(200).json(metar)
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === METAR_NOT_FOUND_ERROR) {
+      response.status(404).json({ error: METAR_NOT_FOUND_ERROR })
+      return
+    }
+
     response.status(502).json({ error: METAR_FETCH_ERROR })
   }
 }

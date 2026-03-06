@@ -1,7 +1,20 @@
 import { AnimatePresence, motion } from 'framer-motion'
 import clsx from 'clsx'
-import { CloudSun, LoaderCircle, Moon, Search, Star, Sun, Telescope, Wind } from 'lucide-react'
-import { useEffect, useState, type FormEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
+import {
+  Activity,
+  LoaderCircle,
+  Moon,
+  RefreshCw,
+  Search,
+  ShieldAlert,
+  Sparkles,
+  Star,
+  Sun,
+  Telescope,
+  Wind,
+} from 'lucide-react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import './App.css'
 import {
   METAR_FETCH_ERROR,
@@ -22,8 +35,10 @@ import {
   resolveTheme,
   saveThemeMode,
 } from './lib/theme'
+import type { PilotAnalysisRequest } from './lib/pilotAnalysis'
 
 type RequestState = 'idle' | 'loading' | 'success' | 'error'
+type AnalysisState = 'idle' | 'streaming' | 'success' | 'error'
 
 const MAX_HISTORY_ITEMS = 6
 
@@ -36,6 +51,10 @@ function App() {
   const [favorites, setFavorites] = useState<string[]>([])
   const [themeMode, setThemeMode] = useState<ThemeMode>('system')
   const [prefersDark, setPrefersDark] = useState(false)
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisState>('idle')
+  const [analysisMarkdown, setAnalysisMarkdown] = useState('')
+  const [analysisError, setAnalysisError] = useState('')
+  const analysisAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     setRecentSearches(loadStoredCodes(RECENT_SEARCHES_STORAGE_KEY))
@@ -63,11 +82,18 @@ function App() {
     saveThemeMode(themeMode)
   }, [prefersDark, themeMode])
 
+  useEffect(() => {
+    return () => {
+      analysisAbortRef.current?.abort()
+    }
+  }, [])
+
   const activeTheme = resolveTheme(themeMode, prefersDark)
 
   const performLookup = async (requestedCode?: string) => {
     const code = normalizeAirportCode(requestedCode ?? query)
     setQuery(code)
+    resetAnalysis()
 
     if (code.length !== 4) {
       setResult(null)
@@ -129,53 +155,141 @@ function App() {
 
   const isFavorite = result ? favorites.includes(result.station.icao) : false
   const themeLabel = themeMode === 'system' ? `${activeTheme} (auto)` : activeTheme
+  const displayedFlightRules = result
+    ? summarizeFlightCategory(result.flightCategory ?? null)
+    : 'Stand by'
+
+  const requestPilotAnalysis = async () => {
+    if (!result) {
+      return
+    }
+
+    analysisAbortRef.current?.abort()
+    const abortController = new AbortController()
+    analysisAbortRef.current = abortController
+    setAnalysisStatus('streaming')
+    setAnalysisMarkdown('')
+    setAnalysisError('')
+
+    try {
+      const payload: PilotAnalysisRequest = { report: result }
+      const response = await fetch('/api/pilot-analysis', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: abortController.signal,
+      })
+
+      if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null
+        throw new Error(errorPayload?.error ?? 'Pilot analysis failed.')
+      }
+
+      if (!response.body) {
+        throw new Error('Pilot analysis stream was unavailable.')
+      }
+
+      let hasStreamError = false
+
+      await consumeEventStream(response.body, {
+        onDone: () => {
+          setAnalysisStatus('success')
+        },
+        onError: (message) => {
+          hasStreamError = true
+          setAnalysisStatus('error')
+          setAnalysisError(message)
+        },
+        onToken: (token) => {
+          setAnalysisMarkdown((current) => current + token)
+        },
+      })
+
+      if (!hasStreamError) {
+        setAnalysisStatus('success')
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return
+      }
+
+      setAnalysisStatus('error')
+      setAnalysisError(error instanceof Error ? error.message : 'Pilot analysis failed.')
+    } finally {
+      if (analysisAbortRef.current === abortController) {
+        analysisAbortRef.current = null
+      }
+    }
+  }
+
+  const resetAnalysis = () => {
+    analysisAbortRef.current?.abort()
+    analysisAbortRef.current = null
+    setAnalysisStatus('idle')
+    setAnalysisMarkdown('')
+    setAnalysisError('')
+  }
 
   return (
     <div className="app-shell">
-      <div className="app-grid" />
+      <div className="ambient-orb ambient-orb--primary" />
+      <div className="ambient-orb ambient-orb--secondary" />
+      <div className="scanlines" />
       <motion.main
         className="app"
         initial={{ opacity: 0, y: 32 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.55 }}
       >
+        {/* Command Center */}
         <motion.section
-          className="hero-panel"
+          className="command-center"
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.08, duration: 0.45 }}
         >
-          <div className="hero-copy">
-            <span className="eyebrow">Aviation weather, decoded fast</span>
-            <h1>MetarX</h1>
-            <p>
-              Look up live airport METARs, decode the report into pilot-friendly weather
-              signals, and keep the stations you monitor most close at hand.
-            </p>
+          <div className="top-bar">
+            <span className="top-bar-logo">MX</span>
+            <div className="top-bar-divider" />
+            <span className="top-bar-subtitle">Flight Weather Console</span>
+            <div className="top-bar-spacer" />
+            <button
+              aria-label={`Theme mode: ${themeLabel}`}
+              className="theme-button"
+              type="button"
+              title={`Theme: ${themeLabel}`}
+              onClick={onThemeChange}
+            >
+              {activeTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
+            </button>
           </div>
 
-          <div className="hero-actions">
+          <div className="hero-search">
             <form className="search-form" onSubmit={onSubmit}>
-              <label className="search-label" htmlFor="airport-code">
-                ICAO airport code
-              </label>
-              <div className="search-row">
-                <div className="input-wrap">
-                  <Search size={18} />
-                  <input
-                    id="airport-code"
-                    name="airport-code"
-                    type="text"
-                    inputMode="text"
-                    autoCapitalize="characters"
-                    autoCorrect="off"
-                    maxLength={4}
-                    value={query}
-                    placeholder="KJFK"
-                    onChange={(event) => setQuery(normalizeAirportCode(event.target.value))}
-                  />
-              </div>
-              <button className="primary-button" type="submit" disabled={status === 'loading'}>
+              <div className="search-input-group">
+                <Search className="search-icon" size={20} />
+                <input
+                  aria-label="ICAO airport code"
+                  id="airport-code"
+                  name="airport-code"
+                  type="text"
+                  inputMode="text"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  maxLength={4}
+                  value={query}
+                  placeholder="KJFK"
+                  onChange={(event) => setQuery(normalizeAirportCode(event.target.value))}
+                />
+                <motion.button
+                  className="search-submit"
+                  type="submit"
+                  disabled={status === 'loading'}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.97 }}
+                >
                   {status === 'loading' ? (
                     <>
                       <LoaderCircle className="spin" size={18} />
@@ -184,48 +298,78 @@ function App() {
                   ) : (
                     <>
                       <Telescope size={18} />
-                      Analyze METAR
+                      Decode METAR
                     </>
                   )}
-                </button>
+                </motion.button>
               </div>
             </form>
-
-            <div className="toolbar">
-              <button
-                aria-label={`Theme mode: ${themeLabel}`}
-                className="theme-button"
-                type="button"
-                onClick={onThemeChange}
-              >
-                {activeTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
-                Theme: {themeLabel}
-              </button>
-              <div className="toolbar-note">
-                <CloudSun size={16} />
-                NOAA source via proxy
-              </div>
+            <div className="status-bar">
+              <span className="status-live-dot" />
+              <span className="status-label">NOAA Live</span>
+              <div className="status-separator" />
+              <span className="status-flight-rules">
+                <Activity size={12} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                {status === 'loading'
+                  ? 'Fetching report'
+                  : result
+                    ? displayedFlightRules
+                    : 'Stand by'}
+              </span>
             </div>
           </div>
         </motion.section>
 
         <div className="content-grid">
           <motion.section
-            className="results-panel glass-card"
+            className="results-panel"
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.14, duration: 0.45 }}
           >
-            <div className="panel-header">
+            <div className="panel-header report-header">
               <div>
-                <span className="panel-kicker">Decoded weather</span>
+                <span className="panel-kicker">Operational weather report</span>
                 <h2>Current conditions</h2>
               </div>
               {result ? (
-                <button className="favorite-button" type="button" onClick={onToggleFavorite}>
-                  <Star size={16} fill={isFavorite ? 'currentColor' : 'none'} />
-                  {isFavorite ? 'Saved' : 'Save'}
-                </button>
+                <div className="panel-actions">
+                  <motion.button
+                    className="analysis-button"
+                    type="button"
+                    onClick={() => void requestPilotAnalysis()}
+                    disabled={analysisStatus === 'streaming'}
+                    whileHover={{ scale: 1.03, y: -2 }}
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    {analysisStatus === 'streaming' ? (
+                      <>
+                        <LoaderCircle className="spin" size={16} />
+                        Reviewing METAR
+                      </>
+                    ) : analysisStatus === 'success' ? (
+                      <>
+                        <RefreshCw size={16} />
+                        Refresh Perspective
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={16} />
+                        Pilot Perspective
+                      </>
+                    )}
+                  </motion.button>
+                  <motion.button
+                    className="favorite-button"
+                    type="button"
+                    onClick={onToggleFavorite}
+                    whileHover={{ scale: 1.03, y: -2 }}
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    <Star size={16} fill={isFavorite ? 'currentColor' : 'none'} />
+                    {isFavorite ? 'Saved' : 'Save'}
+                  </motion.button>
+                </div>
               ) : null}
             </div>
 
@@ -233,7 +377,7 @@ function App() {
               {status === 'loading' ? (
                 <motion.div
                   key="loading"
-                  className="loading-state"
+                  className="loading-state console-state"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -251,11 +395,12 @@ function App() {
               {status === 'error' ? (
                 <motion.div
                   key="error"
-                  className="message-state error"
+                  className="message-state error console-state"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
                 >
+                  <ShieldAlert size={28} />
                   <h3>Lookup failed</h3>
                   <p>{errorMessage}</p>
                 </motion.div>
@@ -264,7 +409,7 @@ function App() {
               {status !== 'loading' && status !== 'error' && !result ? (
                 <motion.div
                   key="idle"
-                  className="message-state idle"
+                  className="message-state idle console-state"
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -8 }}
@@ -283,10 +428,16 @@ function App() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
                 >
-                  <header className="station-header">
+                  <motion.header
+                    className="station-header"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0 }}
+                  >
                     <div>
                       <span className="station-code">{result.station.icao}</span>
                       <h3>{result.station.name}</h3>
+                      <p className="station-subtitle">Observed {formatUtc(result.observedAt)} UTC</p>
                     </div>
                     <div
                       className={clsx(
@@ -296,34 +447,102 @@ function App() {
                     >
                       {summarizeFlightCategory(result.flightCategory)}
                     </div>
-                  </header>
+                  </motion.header>
 
-                  <section className="raw-card">
-                    <span>Raw METAR</span>
+                  <motion.section
+                    className="raw-card"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                  >
+                    <div className="raw-card-header">Raw METAR</div>
                     <code>{result.rawMetar}</code>
-                  </section>
+                  </motion.section>
 
-                    <section className="metrics-grid">
-                      <MetricCard
-                        label="Flight Rules"
-                        value={summarizeFlightCategory(result.flightCategory)}
-                      />
-                      <MetricCard label="Wind" value={result.decoded.wind.text} />
-                      <MetricCard label="Visibility" value={result.decoded.visibility.text} />
-                      <MetricCard label="Clouds" value={result.decoded.cloudsText} />
-                      <MetricCard label="Temperature" value={result.decoded.temperature.text} />
-                      <MetricCard label="Dew Point" value={result.decoded.dewPoint.text} />
-                      <MetricCard label="Altimeter" value={result.decoded.altimeter.text} />
-                      <MetricCard label="Weather" value={result.decoded.weather.text} />
-                    </section>
+                  <motion.div
+                    className="report-grid"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.15 }}
+                  >
+                    <ReportSection
+                      kicker="Core"
+                      title="Flight and atmosphere"
+                      accent="accent-cyan"
+                      items={[
+                        { label: 'Flight Rules', value: displayedFlightRules },
+                        { label: 'Wind', value: result.decoded.wind.text },
+                        { label: 'Visibility', value: result.decoded.visibility.text },
+                        { label: 'Altimeter', value: result.decoded.altimeter.text },
+                      ]}
+                    />
+                    <ReportSection
+                      kicker="Thermal"
+                      title="Temperature and moisture"
+                      accent="accent-mint"
+                      items={[
+                        { label: 'Temperature', value: result.decoded.temperature.text },
+                        { label: 'Dew Point', value: result.decoded.dewPoint.text },
+                        { label: 'Clouds', value: result.decoded.cloudsText },
+                        { label: 'Weather', value: result.decoded.weather.text },
+                      ]}
+                    />
+                  </motion.div>
 
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                  >
                     <RemarksCard items={result.decoded.remarksItems} />
+                  </motion.div>
+
+                  <AnimatePresence>
+                    {analysisStatus !== 'idle' ? (
+                      <motion.section
+                        className="analysis-card"
+                        initial={{ opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        <div className="analysis-header">
+                          <div>
+                            <span className="panel-kicker">Pilot perspective</span>
+                            <h3>Instructor-style review</h3>
+                          </div>
+                          {analysisStatus === 'streaming' ? (
+                            <div className="analysis-status">
+                              <LoaderCircle className="spin" size={16} />
+                              Streaming
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {analysisStatus === 'error' ? (
+                          <div className="analysis-error">{analysisError}</div>
+                        ) : (
+                          <>
+                            <div className="analysis-markdown">
+                              <ReactMarkdown>{analysisMarkdown}</ReactMarkdown>
+                            </div>
+                            {analysisStatus === 'streaming' ? (
+                              <div className="analysis-streaming-indicator">
+                                <span />
+                                Senior-pilot perspective is streaming in.
+                              </div>
+                            ) : null}
+                          </>
+                        )}
+                      </motion.section>
+                    ) : null}
+                  </AnimatePresence>
 
                   <footer className="result-footer">
-                    <span>Observed {formatUtc(result.observedAt)}</span>
                     <span>
                       {result.station.lat.toFixed(2)}, {result.station.lon.toFixed(2)}
                     </span>
+                    <span>Source NOAA</span>
                   </footer>
                 </motion.div>
               ) : null}
@@ -338,12 +557,14 @@ function App() {
           >
             <HistoryCard
               title="Recent searches"
+              kicker="Traffic"
               items={recentSearches}
               emptyLabel="No airport lookups yet."
               onSelect={(code) => void performLookup(code)}
             />
             <HistoryCard
               title="Favorites"
+              kicker="Pinned"
               items={favorites}
               emptyLabel="Save stations for quick access."
               onSelect={(code) => void performLookup(code)}
@@ -355,17 +576,40 @@ function App() {
   )
 }
 
-type MetricCardProps = {
+type ReportMetric = {
   label: string
   value: string
 }
 
-function MetricCard({ label, value }: MetricCardProps) {
+type ReportSectionProps = {
+  accent: string
+  items: ReportMetric[]
+  kicker: string
+  title: string
+}
+
+function ReportSection({ accent, items, kicker, title }: ReportSectionProps) {
   return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </article>
+    <section className={clsx('report-section', accent)}>
+      <header className="report-section-header">
+        <span className="panel-kicker">{kicker}</span>
+        <h4>{title}</h4>
+      </header>
+      <div className="metrics-grid">
+        {items.map((item, index) => (
+          <motion.article
+            className="metric-card"
+            key={item.label}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.08, duration: 0.3 }}
+          >
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </motion.article>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -376,7 +620,10 @@ type RemarksCardProps = {
 function RemarksCard({ items }: RemarksCardProps) {
   return (
     <section className="remarks-card">
-      <span>Remarks</span>
+      <div className="report-section-header">
+        <span className="panel-kicker">Decoded remarks</span>
+        <h4>Operational notes</h4>
+      </div>
       <div className="remarks-list">
         {items.map((item) => (
           <div className="remarks-item" key={item}>
@@ -389,27 +636,35 @@ function RemarksCard({ items }: RemarksCardProps) {
 }
 
 type HistoryCardProps = {
+  kicker: string
   title: string
   items: string[]
   emptyLabel: string
   onSelect: (code: string) => void
 }
 
-function HistoryCard({ title, items, emptyLabel, onSelect }: HistoryCardProps) {
+function HistoryCard({ title, kicker, items, emptyLabel, onSelect }: HistoryCardProps) {
   return (
-    <section className="glass-card history-card">
+    <section className="glass-card history-card side-panel">
       <div className="panel-header compact">
         <div>
-          <span className="panel-kicker">Quick access</span>
+          <span className="panel-kicker">{kicker}</span>
           <h2>{title}</h2>
         </div>
       </div>
       {items.length > 0 ? (
         <div className="chip-wrap">
           {items.map((item) => (
-            <button className="history-chip" key={item} type="button" onClick={() => onSelect(item)}>
+            <motion.button
+              className="history-chip"
+              key={item}
+              type="button"
+              onClick={() => onSelect(item)}
+              whileHover={{ scale: 1.03, y: -2 }}
+              whileTap={{ scale: 0.97 }}
+            >
               {item}
-            </button>
+            </motion.button>
           ))}
         </div>
       ) : (
@@ -427,6 +682,79 @@ function formatUtc(value: string) {
     timeStyle: 'short',
     timeZone: 'UTC',
   }).format(date)
+}
+
+type EventStreamHandlers = {
+  onDone: () => void
+  onError: (message: string) => void
+  onToken: (token: string) => void
+}
+
+async function consumeEventStream(
+  stream: ReadableStream<Uint8Array>,
+  handlers: EventStreamHandlers,
+) {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+
+      buffer += decoder.decode(value, { stream: true })
+      let separatorIndex = buffer.indexOf('\n\n')
+
+      while (separatorIndex !== -1) {
+        const block = buffer.slice(0, separatorIndex)
+        buffer = buffer.slice(separatorIndex + 2)
+        processEventBlock(block, handlers)
+        separatorIndex = buffer.indexOf('\n\n')
+      }
+    }
+
+    if (buffer.trim()) {
+      processEventBlock(buffer, handlers)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function processEventBlock(block: string, handlers: EventStreamHandlers) {
+  const lines = block.split('\n')
+  let eventName = 'message'
+  let data = ''
+
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+      continue
+    }
+
+    if (line.startsWith('data:')) {
+      data += line.slice(5).trim()
+    }
+  }
+
+  const parsedData = data ? (JSON.parse(data) as string) : ''
+
+  if (eventName === 'token') {
+    handlers.onToken(parsedData)
+    return
+  }
+
+  if (eventName === 'error') {
+    handlers.onError(parsedData || 'Pilot analysis failed.')
+    return
+  }
+
+  if (eventName === 'done') {
+    handlers.onDone()
+  }
 }
 
 export default App
