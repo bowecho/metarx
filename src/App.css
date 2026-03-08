@@ -372,11 +372,21 @@
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
 
+.analysis-button--primary {
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-violet));
+  border-color: transparent;
+  color: #fff;
+}
+
 .analysis-button:hover,
 .favorite-button:hover {
   border-color: color-mix(in srgb, var(--accent-primary) 40%, var(--border-strong));
   box-shadow: var(--glow-cyan);
   transform: translateY(-1px);
+}
+
+.analysis-button--primary:hover {
+  border-color: transparent;
 }
 
 /* ===== Console States (Loading / Idle / Error) ===== */
@@ -757,6 +767,12 @@
   position: relative;
 }
 
+.analysis-card--idle {
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--accent-primary) 14%, transparent), transparent 46%),
+    var(--panel-inset);
+}
+
 /* Gradient border effect */
 .analysis-card::before {
   background: linear-gradient(135deg, var(--accent-violet), var(--accent-primary), var(--accent-amber));
@@ -778,6 +794,18 @@
   display: flex;
   gap: 12px;
   justify-content: space-between;
+}
+
+.analysis-body,
+.analysis-empty-state {
+  display: grid;
+  gap: 16px;
+}
+
+.analysis-empty-state p {
+  color: var(--text-soft);
+  margin: 0;
+  max-width: 42rem;
 }
 
 .analysis-status {

@@ -2,7 +2,6 @@ import { AnimatePresence, motion } from 'framer-motion'
 import clsx from 'clsx'
 import ReactMarkdown from 'react-markdown'
 import {
-  Activity,
   LoaderCircle,
   Moon,
   RefreshCw,
@@ -55,6 +54,7 @@ function App() {
   const [analysisMarkdown, setAnalysisMarkdown] = useState('')
   const [analysisError, setAnalysisError] = useState('')
   const analysisAbortRef = useRef<AbortController | null>(null)
+  const analysisSectionRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     setRecentSearches(loadStoredCodes(RECENT_SEARCHES_STORAGE_KEY))
@@ -155,13 +155,16 @@ function App() {
 
   const isFavorite = result ? favorites.includes(result.station.icao) : false
   const themeLabel = themeMode === 'system' ? `${activeTheme} (auto)` : activeTheme
-  const displayedFlightRules = result
-    ? summarizeFlightCategory(result.flightCategory ?? null)
-    : 'Stand by'
+  const displayedFlightRules = result ? summarizeFlightCategory(result.flightCategory ?? null) : ''
 
   const requestPilotAnalysis = async () => {
     if (!result) {
       return
+    }
+
+    const analysisSection = analysisSectionRef.current
+    if (analysisSection && shouldScrollAnalysisSectionIntoView(analysisSection)) {
+      analysisSection.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
 
     analysisAbortRef.current?.abort()
@@ -251,9 +254,9 @@ function App() {
           transition={{ delay: 0.08, duration: 0.45 }}
         >
           <div className="top-bar">
-            <span className="top-bar-logo">MX</span>
+            <span className="top-bar-logo">MetarX</span>
             <div className="top-bar-divider" />
-            <span className="top-bar-subtitle">Flight Weather Console</span>
+            <span className="top-bar-subtitle">Pilot Weather Briefing</span>
             <div className="top-bar-spacer" />
             <button
               aria-label={`Theme mode: ${themeLabel}`}
@@ -304,19 +307,6 @@ function App() {
                 </motion.button>
               </div>
             </form>
-            <div className="status-bar">
-              <span className="status-live-dot" />
-              <span className="status-label">NOAA Live</span>
-              <div className="status-separator" />
-              <span className="status-flight-rules">
-                <Activity size={12} style={{ verticalAlign: '-2px', marginRight: 6 }} />
-                {status === 'loading'
-                  ? 'Fetching report'
-                  : result
-                    ? displayedFlightRules
-                    : 'Stand by'}
-              </span>
-            </div>
           </div>
         </motion.section>
 
@@ -333,32 +323,7 @@ function App() {
                 <h2>Current conditions</h2>
               </div>
               {result ? (
-                <div className="panel-actions">
-                  <motion.button
-                    className="analysis-button"
-                    type="button"
-                    onClick={() => void requestPilotAnalysis()}
-                    disabled={analysisStatus === 'streaming'}
-                    whileHover={{ scale: 1.03, y: -2 }}
-                    whileTap={{ scale: 0.97 }}
-                  >
-                    {analysisStatus === 'streaming' ? (
-                      <>
-                        <LoaderCircle className="spin" size={16} />
-                        Reviewing METAR
-                      </>
-                    ) : analysisStatus === 'success' ? (
-                      <>
-                        <RefreshCw size={16} />
-                        Refresh Perspective
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={16} />
-                        Pilot Perspective
-                      </>
-                    )}
-                  </motion.button>
+                <div className="panel-actions" role="group" aria-label="Result actions">
                   <motion.button
                     className="favorite-button"
                     type="button"
@@ -473,6 +438,14 @@ function App() {
                         { label: 'Flight Rules', value: displayedFlightRules },
                         { label: 'Wind', value: result.decoded.wind.text },
                         { label: 'Visibility', value: result.decoded.visibility.text },
+                        {
+                          label: 'Runway Visual Range',
+                          value: result.decoded.runwayVisualRange.text,
+                        },
+                        {
+                          label: 'Vertical Visibility',
+                          value: result.decoded.verticalVisibility.text,
+                        },
                         { label: 'Altimeter', value: result.decoded.altimeter.text },
                       ]}
                     />
@@ -497,51 +470,89 @@ function App() {
                     <RemarksCard items={result.decoded.remarksItems} />
                   </motion.div>
 
-                  <AnimatePresence>
-                    {analysisStatus !== 'idle' ? (
-                      <motion.section
-                        className="analysis-card"
-                        initial={{ opacity: 0, y: 12 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.3 }}
-                      >
-                        <div className="analysis-header">
-                          <div>
-                            <span className="panel-kicker">Pilot perspective</span>
-                            <h3>Instructor-style review</h3>
-                          </div>
-                          {analysisStatus === 'streaming' ? (
-                            <div className="analysis-status">
-                              <LoaderCircle className="spin" size={16} />
-                              Streaming
-                            </div>
-                          ) : null}
+                  <motion.section
+                    ref={analysisSectionRef}
+                    className={clsx(
+                      'analysis-card',
+                      analysisStatus === 'idle' && 'analysis-card--idle',
+                    )}
+                    role="region"
+                    aria-label="Pilot perspective"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.24, duration: 0.3 }}
+                  >
+                    <div className="analysis-header">
+                      <div>
+                        <span className="panel-kicker">Pilot perspective</span>
+                      </div>
+                      {analysisStatus === 'streaming' ? (
+                        <div className="analysis-status">
+                          <LoaderCircle className="spin" size={16} />
+                          Streaming
                         </div>
+                      ) : null}
+                      {analysisStatus === 'success' ? (
+                        <motion.button
+                          className="analysis-button"
+                          type="button"
+                          onClick={() => void requestPilotAnalysis()}
+                          whileHover={{ scale: 1.03, y: -2 }}
+                          whileTap={{ scale: 0.97 }}
+                        >
+                          <RefreshCw size={16} />
+                          Refresh Perspective
+                        </motion.button>
+                      ) : null}
+                    </div>
 
-                        {analysisStatus === 'error' ? (
-                          <div className="analysis-error">{analysisError}</div>
-                        ) : (
-                          <>
-                            <div className="analysis-markdown">
-                              <ReactMarkdown>{analysisMarkdown}</ReactMarkdown>
-                            </div>
-                            {analysisStatus === 'streaming' ? (
-                              <div className="analysis-streaming-indicator">
-                                <span />
-                                Senior-pilot perspective is streaming in.
-                              </div>
-                            ) : null}
-                          </>
-                        )}
-                      </motion.section>
-                    ) : null}
-                  </AnimatePresence>
+                    {analysisStatus === 'idle' ? (
+                      <div className="analysis-empty-state">
+                        <p>
+                          Want the operational take? Generate an instructor-style read on this
+                          METAR.
+                        </p>
+                        <motion.button
+                          className="analysis-button analysis-button--primary"
+                          type="button"
+                          onClick={() => void requestPilotAnalysis()}
+                          whileHover={{ scale: 1.03, y: -2 }}
+                          whileTap={{ scale: 0.97 }}
+                        >
+                          <Sparkles size={16} />
+                          Pilot Perspective
+                        </motion.button>
+                      </div>
+                    ) : analysisStatus === 'error' ? (
+                      <div className="analysis-body">
+                        <div className="analysis-error">{analysisError}</div>
+                        <motion.button
+                          className="analysis-button analysis-button--primary"
+                          type="button"
+                          onClick={() => void requestPilotAnalysis()}
+                          whileHover={{ scale: 1.03, y: -2 }}
+                          whileTap={{ scale: 0.97 }}
+                        >
+                          <RefreshCw size={16} />
+                          Retry Perspective
+                        </motion.button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="analysis-markdown">
+                          <ReactMarkdown>{analysisMarkdown}</ReactMarkdown>
+                        </div>
+                        {analysisStatus === 'streaming' ? (
+                          <div className="analysis-streaming-indicator">
+                            <span />
+                            Senior-pilot perspective is streaming in.
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </motion.section>
 
                   <footer className="result-footer">
-                    <span>
-                      {result.station.lat.toFixed(2)}, {result.station.lon.toFixed(2)}
-                    </span>
                     <span>Source NOAA</span>
                   </footer>
                 </motion.div>
@@ -557,14 +568,12 @@ function App() {
           >
             <HistoryCard
               title="Recent searches"
-              kicker="Traffic"
               items={recentSearches}
               emptyLabel="No airport lookups yet."
               onSelect={(code) => void performLookup(code)}
             />
             <HistoryCard
               title="Favorites"
-              kicker="Pinned"
               items={favorites}
               emptyLabel="Save stations for quick access."
               onSelect={(code) => void performLookup(code)}
@@ -636,7 +645,7 @@ function RemarksCard({ items }: RemarksCardProps) {
 }
 
 type HistoryCardProps = {
-  kicker: string
+  kicker?: string
   title: string
   items: string[]
   emptyLabel: string
@@ -648,7 +657,7 @@ function HistoryCard({ title, kicker, items, emptyLabel, onSelect }: HistoryCard
     <section className="glass-card history-card side-panel">
       <div className="panel-header compact">
         <div>
-          <span className="panel-kicker">{kicker}</span>
+          {kicker ? <span className="panel-kicker">{kicker}</span> : null}
           <h2>{title}</h2>
         </div>
       </div>
@@ -682,6 +691,27 @@ function formatUtc(value: string) {
     timeStyle: 'short',
     timeZone: 'UTC',
   }).format(date)
+}
+
+function shouldScrollAnalysisSectionIntoView(element: HTMLElement) {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  const rect = element.getBoundingClientRect()
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+
+  if (viewportHeight <= 0) {
+    return false
+  }
+
+  const visibleTop = Math.max(rect.top, 0)
+  const visibleBottom = Math.min(rect.bottom, viewportHeight)
+  const visibleHeight = Math.max(0, visibleBottom - visibleTop)
+  const elementHeight = rect.height > 0 ? rect.height : Math.max(rect.bottom - rect.top, 1)
+  const minimumVisibleHeight = Math.min(elementHeight, viewportHeight) * 0.6
+
+  return visibleHeight < minimumVisibleHeight
 }
 
 type EventStreamHandlers = {

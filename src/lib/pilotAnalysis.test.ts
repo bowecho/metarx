@@ -16,6 +16,8 @@ const sampleReport: MetarReport = {
   decoded: {
     wind: { text: '070° at 9 kt' },
     visibility: { text: '2 statute miles' },
+    runwayVisualRange: { text: 'No runway visual range reported' },
+    verticalVisibility: { text: 'No vertical visibility reported' },
     clouds: [],
     cloudsText: 'Few clouds at 0 ft, Overcast at 500 ft',
     temperature: { celsius: 5.6, fahrenheit: 42.1, text: '5.6°C / 42.1°F' },
