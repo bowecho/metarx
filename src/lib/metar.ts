@@ -32,6 +32,10 @@ export type Measurement = {
 }
 
 export type DecodedTextBlock = {
+  feet?: number | null
+  gustKt?: number | null
+  miles?: number | null
+  speedKt?: number | null
   text: string
 }
 
@@ -71,6 +75,16 @@ export type MetarReport = {
     remarksSummary: string
     remarksItems: string[]
   }
+}
+
+export type MetarLookupResponse = MetarReport & {
+  history: MetarReport[]
+}
+
+export type Watchout = {
+  detail: string
+  severity: 'high' | 'medium' | 'low'
+  title: string
 }
 
 export type NoaaMetarRecord = {
@@ -113,12 +127,30 @@ export function summarizeFlightCategory(category: string | null) {
 }
 
 export function mapNoaaMetarResponse(records: NoaaMetarRecord[]) {
-  const report = records[0]
+  const reports = mapNoaaMetarResponses(records)
+  const report = reports[0]
 
   if (!report) {
     throw new Error(METAR_NOT_FOUND_ERROR)
   }
 
+  return report
+}
+
+export function mapNoaaMetarResponses(records: NoaaMetarRecord[]) {
+  if (records.length === 0) {
+    return [] as MetarReport[]
+  }
+
+  return [...records]
+    .sort(
+      (left, right) =>
+        new Date(right.reportTime ?? 0).getTime() - new Date(left.reportTime ?? 0).getTime(),
+    )
+    .map((report) => mapNoaaMetarRecord(report))
+}
+
+function mapNoaaMetarRecord(report: NoaaMetarRecord) {
   if (!report?.icaoId || !report.rawOb || !report.reportTime || report.lat === undefined || report.lon === undefined) {
     throw new Error(METAR_FETCH_ERROR)
   }
@@ -151,10 +183,17 @@ export function mapNoaaMetarResponse(records: NoaaMetarRecord[]) {
     flightCategory: report.fltCat ?? null,
     source: 'NOAA_AWC' as const,
     decoded: {
-      wind: { text: formatWind(report.wdir, report.wspd, report.wgst) },
-      visibility: { text: formatVisibility(report.visib) },
+      wind: {
+        gustKt: report.wgst ?? null,
+        speedKt: report.wspd ?? null,
+        text: formatWind(report.wdir, report.wspd, report.wgst),
+      },
+      visibility: { miles: report.visib ?? null, text: formatVisibility(report.visib) },
       runwayVisualRange: { text: decodeRunwayVisualRange(report.rawOb) },
-      verticalVisibility: { text: formatVerticalVisibility(report.vertVis) },
+      verticalVisibility: {
+        feet: report.vertVis != null ? report.vertVis * 100 : null,
+        text: formatVerticalVisibility(report.vertVis),
+      },
       clouds,
       cloudsText: clouds.length > 0 ? clouds.map((cloud) => cloud.text).join(', ') : 'No cloud layers reported',
       temperature: formatTemperature(report.temp),
@@ -165,6 +204,136 @@ export function mapNoaaMetarResponse(records: NoaaMetarRecord[]) {
       remarksItems,
     },
   } satisfies MetarReport
+}
+
+export function getCeilingFeet(report: MetarReport) {
+  const verticalVisibilityFeet = report.decoded.verticalVisibility.feet
+  const cloudCeilingFeet = report.decoded.clouds
+    .filter((layer) => layer.baseFtAgl != null && ['BKN', 'OVC', 'VV'].includes(layer.coverCode))
+    .map((layer) => layer.baseFtAgl as number)
+    .sort((left, right) => left - right)[0] ?? null
+
+  if (verticalVisibilityFeet == null) {
+    return cloudCeilingFeet
+  }
+
+  if (cloudCeilingFeet == null) {
+    return verticalVisibilityFeet
+  }
+
+  return Math.min(verticalVisibilityFeet, cloudCeilingFeet)
+}
+
+export function deriveMetarWatchouts(report: MetarReport) {
+  const watchouts: Watchout[] = []
+  const visibilityMiles = report.decoded.visibility.miles
+  const ceilingFeet = getCeilingFeet(report)
+  const gustSpread =
+    report.decoded.wind.gustKt != null && report.decoded.wind.speedKt != null
+      ? report.decoded.wind.gustKt - report.decoded.wind.speedKt
+      : null
+  const dewPointSpread =
+    report.decoded.temperature.celsius != null && report.decoded.dewPoint.celsius != null
+      ? Math.abs(report.decoded.temperature.celsius - report.decoded.dewPoint.celsius)
+      : null
+  const weatherText = report.decoded.weather.text.toLowerCase()
+  const remarksText = report.decoded.remarksSummary.toLowerCase()
+
+  if (visibilityMiles != null && visibilityMiles <= 1) {
+    watchouts.push({
+      detail: `Visibility is down to ${report.decoded.visibility.text}, which compresses approach and taxi margin fast.`,
+      severity: 'high',
+      title: 'Visibility is severely reduced',
+    })
+  } else if (visibilityMiles != null && visibilityMiles <= 3) {
+    watchouts.push({
+      detail: `Visibility is ${report.decoded.visibility.text}, so workload and visual margin are both trimmed back.`,
+      severity: 'medium',
+      title: 'Visibility is reduced',
+    })
+  }
+
+  if (
+    visibilityMiles != null &&
+    visibilityMiles <= 3 &&
+    (weatherText.includes('fog') || weatherText.includes('mist'))
+  ) {
+    watchouts.push({
+      detail: 'Fog or mist is stacked on top of reduced visibility, which usually means weak visual cues and a sticky low-level layer.',
+      severity: visibilityMiles <= 1 ? 'high' : 'medium',
+      title: 'Low-level obscuration is in play',
+    })
+  }
+
+  if (ceilingFeet != null && ceilingFeet <= 500) {
+    watchouts.push({
+      detail: `Ceiling is about ${ceilingFeet.toLocaleString()} ft, which leaves almost no visual cushion below the deck.`,
+      severity: 'high',
+      title: 'Ceiling is in the basement',
+    })
+  } else if (ceilingFeet != null && ceilingFeet <= 1_000) {
+    watchouts.push({
+      detail: `Ceiling is about ${ceilingFeet.toLocaleString()} ft, so pattern work and visual maneuvering margin are tight.`,
+      severity: 'medium',
+      title: 'Ceiling is tight',
+    })
+  }
+
+  if (gustSpread != null && gustSpread >= 15) {
+    watchouts.push({
+      detail: `Wind is ${report.decoded.wind.text}, a gust spread big enough to change control feel from one minute to the next.`,
+      severity: gustSpread >= 25 ? 'high' : 'medium',
+      title: 'Gust spread is meaningful',
+    })
+  }
+
+  if (dewPointSpread != null && dewPointSpread <= 2) {
+    watchouts.push({
+      detail: `Temperature and dew point are only ${dewPointSpread.toFixed(1)}°C apart, so low cloud, haze, or additional obscuration can linger.`,
+      severity: dewPointSpread <= 1 ? 'medium' : 'low',
+      title: 'Air mass is near saturation',
+    })
+  }
+
+  if (
+    weatherText.includes('thunderstorm') ||
+    weatherText.includes('snow') ||
+    weatherText.includes('freezing') ||
+    weatherText.includes('ice pellets')
+  ) {
+    watchouts.push({
+      detail: `Reported weather includes ${report.decoded.weather.text}, which can push handling and planning well beyond a routine METAR day.`,
+      severity: 'high',
+      title: 'Active weather is a major factor',
+    })
+  } else if (
+    weatherText.includes('rain') ||
+    weatherText.includes('drizzle') ||
+    weatherText.includes('showers')
+  ) {
+    watchouts.push({
+      detail: `Reported weather includes ${report.decoded.weather.text}, so expect a wet picture and more nuisance workload than a clean VFR report.`,
+      severity: 'low',
+      title: 'Precipitation is part of the picture',
+    })
+  }
+
+  if (
+    remarksText.includes('pressure falling') ||
+    /pressure tendency code [5-8]/.test(remarksText)
+  ) {
+    watchouts.push({
+      detail: 'Pressure tendency is falling in the remarks, which supports a deteriorating or unsettled trend rather than a stabilizing one.',
+      severity: 'medium',
+      title: 'Pressure trend is falling',
+    })
+  }
+
+  const severityRank = { high: 0, medium: 1, low: 2 } as const
+
+  return watchouts
+    .sort((left, right) => severityRank[left.severity] - severityRank[right.severity])
+    .slice(0, 3)
 }
 
 function formatWind(direction: NoaaMetarRecord['wdir'], speed: NullableNumber, gust?: NullableNumber) {
@@ -350,39 +519,48 @@ function parseLightningRemark(tokens: string[], index: number): ParsedRemark | n
     : null
   const lightningIndex = frequencyToken ? index + 1 : index
 
-  if (tokens[lightningIndex] !== 'LTG') {
+  const lightningDescription = decodeLightningDescription(tokens[lightningIndex])
+  if (!lightningDescription) {
     return null
   }
 
   let cursor = lightningIndex + 1
   const distanceToken = LIGHTNING_DISTANCE_LABELS[tokens[cursor]]
   if (!distanceToken) {
+    const locationResult = parseLocationSequence(tokens, cursor)
+    if (!locationResult) {
+      return {
+        consumed: lightningIndex - index + 1,
+        decoded: `${frequencyToken ? `${LIGHTNING_FREQUENCY_LABELS[frequencyToken]} ` : ''}${lightningDescription}`.trim(),
+      }
+    }
+
     return {
-      consumed: lightningIndex - index + 1,
-      decoded: `${frequencyToken ? `${LIGHTNING_FREQUENCY_LABELS[frequencyToken]} ` : ''}lightning`.trim(),
+      consumed: locationResult.nextIndex - index,
+      decoded: `${frequencyToken ? `${LIGHTNING_FREQUENCY_LABELS[frequencyToken]} ` : ''}${lightningDescription} ${locationResult.text}`.trim(),
     }
   }
 
   cursor += 1
-  const directionResult = parseDirectionSequence(tokens, cursor)
-  if (!directionResult) {
+  const locationResult = parseLocationSequence(tokens, cursor)
+  if (!locationResult) {
     return null
   }
 
-  let decoded = `${frequencyToken ? `${LIGHTNING_FREQUENCY_LABELS[frequencyToken]} ` : ''}lightning ${distanceToken} ${formatDirectionList(directionResult.directions)}`
+  let decoded = `${frequencyToken ? `${LIGHTNING_FREQUENCY_LABELS[frequencyToken]} ` : ''}${lightningDescription} ${distanceToken} ${locationResult.text}`
 
-  const movementToken = tokens[directionResult.nextIndex]
-  const movementDirection = tokens[directionResult.nextIndex + 1]
-  if (movementToken === 'MOV' && DIRECTION_LABELS[movementDirection]) {
-    decoded += ` moving ${DIRECTION_LABELS[movementDirection]}`
+  const movementToken = tokens[locationResult.nextIndex]
+  const movementDirection = parseLocationToken(tokens[locationResult.nextIndex + 1])
+  if (movementToken === 'MOV' && movementDirection) {
+    decoded += ` moving ${movementDirection}`
     return {
-      consumed: directionResult.nextIndex + 2 - index,
+      consumed: locationResult.nextIndex + 2 - index,
       decoded,
     }
   }
 
   return {
-    consumed: directionResult.nextIndex - index,
+    consumed: locationResult.nextIndex - index,
     decoded,
   }
 }
@@ -399,25 +577,25 @@ function parseCloudTypeRemark(tokens: string[], index: number): ParsedRemark | n
 
   if (distanceToken) {
     cursor += 1
-    const directionResult = parseDirectionSequence(tokens, cursor)
-    if (!directionResult) {
+    const locationResult = parseLocationSequence(tokens, cursor)
+    if (!locationResult) {
       return null
     }
 
-    decoded += ` ${distanceToken} ${formatDirectionList(directionResult.directions)}`
-    cursor = directionResult.nextIndex
+    decoded += ` ${distanceToken} ${locationResult.text}`
+    cursor = locationResult.nextIndex
   } else {
-    const directionResult = parseDirectionSequence(tokens, cursor)
-    if (directionResult) {
-      decoded += ` ${formatDirectionList(directionResult.directions)}`
-      cursor = directionResult.nextIndex
+    const locationResult = parseLocationSequence(tokens, cursor)
+    if (locationResult) {
+      decoded += ` ${locationResult.text}`
+      cursor = locationResult.nextIndex
     }
   }
 
   const movementToken = tokens[cursor]
-  const movementDirection = tokens[cursor + 1]
-  if (movementToken === 'MOV' && DIRECTION_LABELS[movementDirection]) {
-    decoded += ` moving ${DIRECTION_LABELS[movementDirection]}`
+  const movementDirection = parseLocationToken(tokens[cursor + 1])
+  if (movementToken === 'MOV' && movementDirection) {
+    decoded += ` moving ${movementDirection}`
     cursor += 2
   }
 
@@ -475,10 +653,11 @@ function parseVariableVisibilityRemark(tokens: string[], index: number): ParsedR
 
   const directionToken = tokens[index + 1]
   const visibilityValue = tokens[index + 2]
-  if (DIRECTION_LABELS[directionToken] && visibilityValue) {
+  const directionText = parseLocationToken(directionToken)
+  if (directionText && visibilityValue) {
     return {
       consumed: 3,
-      decoded: `visibility ${DIRECTION_LABELS[directionToken]} ${visibilityValue} statute miles`,
+      decoded: `visibility ${directionText} ${visibilityValue} statute miles`,
     }
   }
 
@@ -491,17 +670,17 @@ function parsePeakWindRemark(tokens: string[], index: number): ParsedRemark | nu
   }
 
   const peakWindToken = tokens[index + 2]
-  if (!peakWindToken || !/^\d{5}\/\d{2}$/.test(peakWindToken)) {
+  if (!peakWindToken || !/^\d{5,6}\/\d{2,4}$/.test(peakWindToken)) {
     return null
   }
 
-  const direction = peakWindToken.slice(0, 3)
-  const speed = Number.parseInt(peakWindToken.slice(3, 5), 10)
-  const minute = peakWindToken.slice(6)
+  const [windToken, timeToken] = peakWindToken.split('/')
+  const direction = windToken.slice(0, 3)
+  const speed = Number.parseInt(windToken.slice(3), 10)
 
   return {
     consumed: 3,
-    decoded: `peak wind ${direction}° at ${speed} kt at :${minute}Z`,
+    decoded: `peak wind ${direction}° at ${speed} kt at ${formatRemarkTimestamp(timeToken)}`,
   }
 }
 
@@ -511,20 +690,20 @@ function parseWindShiftRemark(tokens: string[], index: number): ParsedRemark | n
   }
 
   const minuteToken = tokens[index + 1]
-  if (!minuteToken || !/^\d{2}$/.test(minuteToken)) {
+  if (!minuteToken || !/^\d{2,4}$/.test(minuteToken)) {
     return null
   }
 
   if (tokens[index + 2] === 'FROPA') {
     return {
       consumed: 3,
-      decoded: `wind shift at :${minuteToken}Z due to frontal passage`,
+      decoded: `wind shift at ${formatRemarkTimestamp(minuteToken)} due to frontal passage`,
     }
   }
 
   return {
     consumed: 2,
-    decoded: `wind shift at :${minuteToken}Z`,
+    decoded: `wind shift at ${formatRemarkTimestamp(minuteToken)}`,
   }
 }
 
@@ -548,25 +727,12 @@ function parseAutomatedStationRemark(tokens: string[], index: number): ParsedRem
 
 function parseRemarkTime(tokens: string[], index: number): ParsedRemark | null {
   const token = tokens[index]
-
-  if (/^[A-Z]{2}[EB]\d{2}$/.test(token)) {
-    return {
-      consumed: 1,
-      decoded: decodeRemarkTimeToken(token),
-    }
-  }
-
-  if (/^(?:[A-Z]{2}[EB]\d{2})+$/.test(token)) {
-    return {
-      consumed: 1,
-      decoded: token
-        .match(/[A-Z]{2}[EB]\d{2}/g)!
-        .map((segment) => decodeRemarkTimeToken(segment))
-        .join('; '),
-    }
-  }
-
-  return null
+  return decodeCompactTimingRemark(token)
+    ? {
+        consumed: 1,
+        decoded: decodeCompactTimingRemark(token)!,
+      }
+    : null
 }
 
 function parseSeaLevelPressureRemark(tokens: string[], index: number): ParsedRemark | null {
@@ -617,7 +783,7 @@ function parseHourlyPrecipitationRemark(tokens: string[], index: number): Parsed
 
 function parseThreeOrSixHourPrecipitationRemark(tokens: string[], index: number): ParsedRemark | null {
   const token = tokens[index]
-  if (!/^6\d{4}$/.test(token)) {
+  if (!/^6(?:\d{4}|\/\/\/\/)$/.test(token)) {
     return null
   }
 
@@ -708,6 +874,109 @@ function parsePressureRisingOrFallingRemark(tokens: string[], index: number): Pa
   return null
 }
 
+function parseVariableCeilingRemark(tokens: string[], index: number): ParsedRemark | null {
+  if (tokens[index] !== 'CIG') {
+    return null
+  }
+
+  const ceilingToken = tokens[index + 1]
+  if (!ceilingToken) {
+    return null
+  }
+
+  const variableMatch = ceilingToken.match(/^(?<low>\d{3})V(?<high>\d{3})$/)
+  if (variableMatch?.groups) {
+    return {
+      consumed: 2,
+      decoded: `ceiling varying between ${Number.parseInt(variableMatch.groups.low, 10) * 100} and ${Number.parseInt(variableMatch.groups.high, 10) * 100} ft`,
+    }
+  }
+
+  return null
+}
+
+function parseSecondaryLocationUnavailableRemark(tokens: string[], index: number): ParsedRemark | null {
+  if (tokens[index] !== 'CHINO') {
+    return null
+  }
+
+  const locationResult = parseLocationSequence(tokens, index + 1)
+  if (locationResult) {
+    return {
+      consumed: locationResult.nextIndex - index,
+      decoded: `sky condition at secondary location ${locationResult.text} unavailable`,
+    }
+  }
+
+  return {
+    consumed: 1,
+    decoded: 'sky condition at secondary location unavailable',
+  }
+}
+
+function parseVirgaRemark(tokens: string[], index: number): ParsedRemark | null {
+  if (tokens[index] !== 'VIRGA') {
+    return null
+  }
+
+  const locationResult = parseLocationSequence(tokens, index + 1)
+  if (!locationResult) {
+    return {
+      consumed: 1,
+      decoded: 'virga',
+    }
+  }
+
+  return {
+    consumed: locationResult.nextIndex - index,
+    decoded: `virga ${locationResult.text}`,
+  }
+}
+
+function parseThunderstormLocationRemark(tokens: string[], index: number): ParsedRemark | null {
+  if (tokens[index] !== 'TS') {
+    return null
+  }
+
+  const locationResult = parseLocationSequence(tokens, index + 1)
+  if (!locationResult) {
+    return null
+  }
+
+  let decoded = `thunderstorm ${locationResult.text}`
+  let cursor = locationResult.nextIndex
+
+  if (tokens[cursor] === 'MOV') {
+    const movementDirection = parseLocationToken(tokens[cursor + 1])
+    if (movementDirection) {
+      decoded += ` moving ${movementDirection}`
+      cursor += 2
+    }
+  }
+
+  return {
+    consumed: cursor - index,
+    decoded,
+  }
+}
+
+function parseWeatherLocationRemark(tokens: string[], index: number): ParsedRemark | null {
+  const weatherLabel = REMARK_WEATHER_LOCATION_LABELS[tokens[index]]
+  if (!weatherLabel) {
+    return null
+  }
+
+  const locationResult = parseLocationSequence(tokens, index + 1)
+  if (!locationResult) {
+    return null
+  }
+
+  return {
+    consumed: locationResult.nextIndex - index,
+    decoded: `${weatherLabel} ${locationResult.text}`,
+  }
+}
+
 function parseSensorStatusRemark(tokens: string[], index: number): ParsedRemark | null {
   const decoded = SENSOR_STATUS_LABELS[tokens[index]]
   if (!decoded) {
@@ -743,14 +1012,42 @@ function parseStandaloneWeatherRemark(tokens: string[], index: number): ParsedRe
   }
 }
 
-function decodeRemarkTimeToken(token: string) {
-  const phenomenonCode = token.slice(0, 2)
-  const actionCode = token[2]
-  const minuteValue = token.slice(3)
-  const actionLabel = actionCode === 'B' ? 'began' : actionCode === 'E' ? 'ended' : 'at'
-  const phenomenonLabel = WEATHER_LABELS[phenomenonCode] ?? phenomenonCode
+function decodeCompactTimingRemark(token: string) {
+  const decodedSegments: string[] = []
+  let cursor = 0
 
-  return `${phenomenonLabel.toLowerCase()} ${actionLabel} :${minuteValue}Z`
+  while (cursor < token.length) {
+    const phenomenonCode = REMARK_TIMING_CODES.find((code) => token.startsWith(code, cursor))
+    if (!phenomenonCode) {
+      return null
+    }
+
+    cursor += phenomenonCode.length
+    const timingSegments: string[] = []
+
+    while (cursor < token.length && ['B', 'E'].includes(token[cursor])) {
+      const actionCode = token[cursor]
+      cursor += 1
+      const timeMatch = token.slice(cursor).match(/^\d{4}|^\d{2}/)
+      if (!timeMatch) {
+        return null
+      }
+
+      const timeValue = timeMatch[0]
+      cursor += timeValue.length
+      timingSegments.push(
+        `${REMARK_TIMING_LABELS[phenomenonCode] ?? phenomenonCode} ${actionCode === 'B' ? 'began' : 'ended'} ${formatRemarkTimestamp(timeValue)}`,
+      )
+    }
+
+    if (timingSegments.length === 0) {
+      return null
+    }
+
+    decodedSegments.push(timingSegments.join(' and '))
+  }
+
+  return decodedSegments.join('; ')
 }
 
 function decodeSeaLevelPressure(token: string) {
@@ -767,6 +1064,10 @@ function decodeHourlyPrecipitation(token: string) {
 }
 
 function decodeThreeOrSixHourPrecipitation(token: string) {
+  if (token === '6////') {
+    return '3- or 6-hour precipitation amount indeterminable'
+  }
+
   const inches = Number.parseInt(token.slice(1), 10) / 100
 
   return `3- or 6-hour precipitation ${inches.toFixed(2)} in`
@@ -794,6 +1095,90 @@ function decodeSignedTenths(token: string) {
   return (Number.parseInt(token.slice(1), 10) / 10) * sign
 }
 
+function decodeLightningDescription(token: string) {
+  if (token === 'LTG') {
+    return 'lightning'
+  }
+
+  if (!token.startsWith('LTG')) {
+    return null
+  }
+
+  let remainder = token.slice(3)
+  const types: string[] = []
+
+  while (remainder.length > 0) {
+    const nextType = LIGHTNING_TYPE_CODES.find((typeCode) => remainder.startsWith(typeCode))
+    if (!nextType) {
+      return null
+    }
+
+    types.push(LIGHTNING_TYPE_LABELS[nextType])
+    remainder = remainder.slice(nextType.length)
+  }
+
+  if (types.length === 0) {
+    return null
+  }
+
+  return `${formatDirectionList(types)} lightning`
+}
+
+function parseLocationSequence(tokens: string[], index: number) {
+  const locations: string[] = []
+  let cursor = index
+
+  while (cursor < tokens.length) {
+    const location = parseLocationToken(tokens[cursor])
+    if (!location) {
+      break
+    }
+
+    locations.push(location)
+    cursor += 1
+
+    if (tokens[cursor] === 'AND') {
+      cursor += 1
+      continue
+    }
+
+    break
+  }
+
+  if (locations.length === 0) {
+    return null
+  }
+
+  return {
+    nextIndex: cursor,
+    text: formatDirectionList(locations),
+  }
+}
+
+function parseLocationToken(token: string | undefined) {
+  if (!token) {
+    return null
+  }
+
+  const parts = token.split('-')
+  const labels = parts.map((part) => LOCATION_LABELS[part]).filter(Boolean)
+  if (labels.length !== parts.length) {
+    return null
+  }
+
+  return labels.length === 1
+    ? labels[0]
+    : `${labels.slice(0, -1).join(' through ')} through ${labels[labels.length - 1]}`
+}
+
+function formatRemarkTimestamp(value: string) {
+  if (value.length === 2) {
+    return `:${value}Z`
+  }
+
+  return `${value.slice(0, 2)}:${value.slice(2)}Z`
+}
+
 function parseVisibilityValue(tokens: string[], index: number) {
   const whole = tokens[index]
   const fraction = tokens[index + 1]
@@ -815,37 +1200,6 @@ function parseVisibilityValue(tokens: string[], index: number) {
   }
 }
 
-function parseDirectionSequence(tokens: string[], index: number) {
-  const directions: string[] = []
-  let cursor = index
-
-  while (cursor < tokens.length) {
-    const direction = DIRECTION_LABELS[tokens[cursor]]
-    if (!direction) {
-      break
-    }
-
-    directions.push(direction)
-    cursor += 1
-
-    if (tokens[cursor] === 'AND') {
-      cursor += 1
-      continue
-    }
-
-    break
-  }
-
-  if (directions.length === 0) {
-    return null
-  }
-
-  return {
-    directions,
-    nextIndex: cursor,
-  }
-}
-
 function formatDirectionList(directions: string[]) {
   if (directions.length === 1) {
     return directions[0]
@@ -861,6 +1215,9 @@ function formatDirectionList(directions: string[]) {
 const REMARK_PARSERS: RemarkParser[] = [
   parseLightningRemark,
   parseCloudTypeRemark,
+  parseThunderstormLocationRemark,
+  parseVirgaRemark,
+  parseWeatherLocationRemark,
   parseSurfaceVisibilityRemark,
   parseTowerVisibilityRemark,
   parseVariableVisibilityRemark,
@@ -870,6 +1227,8 @@ const REMARK_PARSERS: RemarkParser[] = [
   parseRemarkTime,
   parseSeaLevelPressureRemark,
   parsePressureRisingOrFallingRemark,
+  parseVariableCeilingRemark,
+  parseSecondaryLocationUnavailableRemark,
   parseSensorStatusRemark,
   parseCloudLayerRemark,
   parseHourlyPrecipitationRemark,
@@ -893,8 +1252,15 @@ const DIRECTION_LABELS: Record<string, string> = {
   W: 'west',
 }
 
+const LOCATION_LABELS: Record<string, string> = {
+  ...DIRECTION_LABELS,
+  ALQDS: 'all quadrants',
+  OHD: 'overhead',
+}
+
 const LIGHTNING_DISTANCE_LABELS: Record<string, string> = {
   DSNT: 'distant',
+  VC: 'in the vicinity',
   VCY: 'in the vicinity',
 }
 
@@ -904,8 +1270,21 @@ const LIGHTNING_FREQUENCY_LABELS: Record<string, string> = {
 }
 
 const CLOUD_TYPE_LABELS: Record<string, string> = {
+  ACC: 'altocumulus castellanus',
+  ACSL: 'altocumulus standing lenticular',
   CB: 'cumulonimbus',
   CBMAM: 'cumulonimbus mammatus',
+  CCSL: 'cirrocumulus standing lenticular',
+  SCSL: 'stratocumulus standing lenticular',
+}
+
+const LIGHTNING_TYPE_CODES = ['IC', 'CG', 'CC', 'CA'] as const
+
+const LIGHTNING_TYPE_LABELS: Record<(typeof LIGHTNING_TYPE_CODES)[number], string> = {
+  CA: 'cloud-to-air',
+  CC: 'cloud-to-cloud',
+  CG: 'cloud-to-ground',
+  IC: 'in-cloud',
 }
 
 const SENSOR_STATUS_LABELS: Record<string, string> = {
@@ -914,6 +1293,26 @@ const SENSOR_STATUS_LABELS: Record<string, string> = {
   PWINO: 'precipitation identifier sensor unavailable',
   RVRNO: 'runway visual range unavailable',
   TSNO: 'thunderstorm information unavailable',
+}
+
+const REMARK_TIMING_LABELS: Record<string, string> = {
+  DZ: 'drizzle',
+  FZDZ: 'freezing drizzle',
+  FZRA: 'freezing rain',
+  PL: 'ice pellets',
+  RA: 'rain',
+  SHRA: 'rain showers',
+  SHSN: 'snow showers',
+  SN: 'snow',
+  TS: 'thunderstorm',
+}
+
+const REMARK_TIMING_CODES = Object.keys(REMARK_TIMING_LABELS).sort(
+  (left, right) => right.length - left.length,
+)
+
+const REMARK_WEATHER_LOCATION_LABELS: Record<string, string> = {
+  VCSH: 'showers in the vicinity',
 }
 
 const WEATHER_LABELS: Record<string, string> = {
@@ -926,5 +1325,6 @@ const WEATHER_LABELS: Record<string, string> = {
   RA: 'Rain',
   SN: 'Snow',
   TS: 'Thunderstorm',
+  VCSH: 'Showers in the vicinity',
   DZ: 'Drizzle',
 }

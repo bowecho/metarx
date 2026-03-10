@@ -4,10 +4,12 @@ import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import {
   buildPilotAnalysisPrompt,
+  getPilotAnalysisTemperature,
+  getPilotAnalysisSystemPrompt,
   PILOT_ANALYSIS_MODEL,
-  PILOT_ANALYSIS_SYSTEM_PROMPT,
   type PilotAnalysisRequest,
 } from '../src/lib/pilotAnalysis'
+import { resolvePersonaMode } from '../src/lib/persona'
 
 const FALLBACK_ENV_PATH = '/home/tonyc/source/tonybot/.env.local'
 
@@ -48,12 +50,15 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
       throw new Error('OpenRouter API key is not configured.')
     }
 
+    const personaMode = resolvePersonaMode(
+      (payload as { personaMode?: unknown }).personaMode,
+    )
     const openrouter = createOpenRouter({ apiKey })
     const result = streamText({
       model: openrouter(PILOT_ANALYSIS_MODEL),
-      temperature: 0.4,
-      system: PILOT_ANALYSIS_SYSTEM_PROMPT,
-      prompt: buildPilotAnalysisPrompt(payload.report),
+      temperature: getPilotAnalysisTemperature(personaMode),
+      system: getPilotAnalysisSystemPrompt(personaMode),
+      prompt: buildPilotAnalysisPrompt(payload.report, personaMode),
     })
 
     response.statusCode = 200
@@ -114,7 +119,9 @@ function isPilotAnalysisRequest(value: unknown): value is PilotAnalysisRequest {
     return false
   }
 
-  const candidate = value as { report?: { rawMetar?: unknown; station?: { icao?: unknown } } }
+  const candidate = value as {
+    report?: { rawMetar?: unknown; station?: { icao?: unknown } }
+  }
   return (
     typeof candidate.report?.rawMetar === 'string' &&
     typeof candidate.report?.station?.icao === 'string'

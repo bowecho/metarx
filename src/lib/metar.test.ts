@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { mapNoaaMetarResponse, METAR_NOT_FOUND_ERROR, normalizeAirportCode } from './metar'
+import {
+  deriveMetarWatchouts,
+  mapNoaaMetarResponse,
+  mapNoaaMetarResponses,
+  METAR_NOT_FOUND_ERROR,
+  normalizeAirportCode,
+} from './metar'
 
 describe('normalizeAirportCode', () => {
   it('keeps only letters, uppercases them, and trims to four characters', () => {
@@ -213,6 +219,295 @@ describe('mapNoaaMetarResponse', () => {
     expect(result.decoded.runwayVisualRange.text).toBe(
       '10L: less than 600 ft; 10C: more than 6,000 ft; 10R: 4,500 ft to 6,000 ft',
     )
+  })
+
+  it('decodes peak wind groups with hhmm timestamps', () => {
+    const result = mapNoaaMetarResponse([
+      {
+        icaoId: 'KSFO',
+        rawOb:
+          'METAR KSFO 100256Z 27021G28KT 10SM FEW009 SCT200 12/07 A2989 RMK AO2 PK WND 28032/0228 SLP123 T01220072 51011 $',
+        reportTime: '2026-03-10T02:56:00.000Z',
+        fltCat: 'VFR',
+        temp: 12.2,
+        dewp: 7.2,
+        wdir: 270,
+        wspd: 21,
+        wgst: 28,
+        visib: 10,
+        altim: 1012.5,
+        lat: 37.6196,
+        lon: -122.3656,
+        name: 'San Francisco Intl, CA, US',
+        clouds: [
+          { cover: 'FEW', base: 900 },
+          { cover: 'SCT', base: 20000 },
+        ],
+      },
+    ])
+
+    expect(result.decoded.remarksItems).toContain('peak wind 280° at 32 kt at 02:28Z')
+  })
+
+  it('decodes lightning type groups, thunderstorm location, and wind shift timestamps', () => {
+    const result = mapNoaaMetarResponse([
+      {
+        icaoId: 'KATL',
+        rawOb:
+          'SPECI KATL 100315Z 30013G26KT 3SM TSRA BR SCT020CB BKN035 OVC080 18/16 A3020 RMK AO2 PK WND 31026/0309 WSHFT 0242 OCNL LTGICCGCA OHD-ALQDS TS OHD-ALQDS MOV E P0041 T01780156 $',
+        reportTime: '2026-03-10T03:15:00.000Z',
+        fltCat: 'IFR',
+        temp: 17.8,
+        dewp: 15.6,
+        wdir: 300,
+        wspd: 13,
+        wgst: 26,
+        visib: 3,
+        altim: 1022.0,
+        wxString: 'TSRA BR',
+        lat: 33.6367,
+        lon: -84.4281,
+        name: 'Atlanta Hartsfield-Jackson Intl, GA, US',
+        clouds: [
+          { cover: 'SCT', base: 2000 },
+          { cover: 'BKN', base: 3500 },
+          { cover: 'OVC', base: 8000 },
+        ],
+      },
+    ])
+
+    expect(result.decoded.remarksItems).toContain('peak wind 310° at 26 kt at 03:09Z')
+    expect(result.decoded.remarksItems).toContain('wind shift at 02:42Z')
+    expect(result.decoded.remarksItems).toContain(
+      'occasional in-cloud, cloud-to-ground, and cloud-to-air lightning overhead through all quadrants',
+    )
+    expect(result.decoded.remarksItems).toContain(
+      'thunderstorm overhead through all quadrants moving east',
+    )
+  })
+
+  it('decodes compact begin/end timing groups like RAB14E24', () => {
+    const result = mapNoaaMetarResponse([
+      {
+        icaoId: 'KJAN',
+        rawOb:
+          'METAR KJAN 100254Z 20009KT 10SM FEW060 BKN085 22/19 A3008 RMK AO2 RAB14E24 SLP183 P0000 60000 T02170194 53020 $',
+        reportTime: '2026-03-10T02:54:00.000Z',
+        fltCat: 'VFR',
+        temp: 21.7,
+        dewp: 19.4,
+        wdir: 200,
+        wspd: 9,
+        visib: 10,
+        altim: 1018.3,
+        lat: 32.3112,
+        lon: -90.0759,
+        name: 'Jackson Intl, MS, US',
+        clouds: [
+          { cover: 'FEW', base: 6000 },
+          { cover: 'BKN', base: 8500 },
+        ],
+      },
+    ])
+
+    expect(result.decoded.remarksItems).toContain('rain began :14Z and rain ended :24Z')
+  })
+
+  it('decodes variable ceiling, virga, secondary-location, and indeterminable precipitation remarks', () => {
+    const memphis = mapNoaaMetarResponse([
+      {
+        icaoId: 'KMEM',
+        rawOb:
+          'SPECI KMEM 100331Z 17006KT 10SM OVC010 19/18 A2999 RMK AO2 CIG 007V013 T01940183 $',
+        reportTime: '2026-03-10T03:31:00.000Z',
+        fltCat: 'IFR',
+        temp: 19.4,
+        dewp: 18.3,
+        wdir: 170,
+        wspd: 6,
+        visib: 10,
+        altim: 1015.6,
+        lat: 35.0424,
+        lon: -89.9767,
+        name: 'Memphis Intl, TN, US',
+        clouds: [{ cover: 'OVC', base: 1000 }],
+      },
+    ])
+
+    const elPaso = mapNoaaMetarResponse([
+      {
+        icaoId: 'KELP',
+        rawOb:
+          'METAR KELP 100251Z 32007KT 10SM FEW100 SCT150 SCT250 21/M06 A2989 RMK AO2 SLP072 OCNL LTGICCG DSNT S VIRGA SE-OHD-NW CB DSNT S MOV N T02111061 53005',
+        reportTime: '2026-03-10T02:51:00.000Z',
+        fltCat: 'VFR',
+        temp: 21.1,
+        dewp: -6.1,
+        wdir: 320,
+        wspd: 7,
+        visib: 10,
+        altim: 1012.5,
+        lat: 31.8072,
+        lon: -106.3776,
+        name: 'El Paso Intl, TX, US',
+        clouds: [
+          { cover: 'FEW', base: 10000 },
+          { cover: 'SCT', base: 15000 },
+          { cover: 'SCT', base: 25000 },
+        ],
+      },
+    ])
+
+    const syracuse = mapNoaaMetarResponse([
+      {
+        icaoId: 'KSYR',
+        rawOb:
+          'METAR KSYR 100254Z 23004KT 10SM CLR 11/M02 A2990 RMK AO2 SLP122 T01061022 53015 CHINO NW $',
+        reportTime: '2026-03-10T02:54:00.000Z',
+        fltCat: 'VFR',
+        temp: 10.6,
+        dewp: -2.2,
+        wdir: 230,
+        wspd: 4,
+        visib: 10,
+        altim: 1012.2,
+        lat: 43.1112,
+        lon: -76.1063,
+        name: 'Syracuse Hancock Intl, NY, US',
+        clouds: [],
+      },
+    ])
+
+    const keyWest = mapNoaaMetarResponse([
+      {
+        icaoId: 'KEYW',
+        rawOb:
+          'METAR KEYW 100253Z AUTO 08007KT 10SM CLR 25/21 A3015 RMK AO2 SLP216 6//// T02500211 53018 PNO $',
+        reportTime: '2026-03-10T02:53:00.000Z',
+        fltCat: 'VFR',
+        temp: 25,
+        dewp: 21.1,
+        wdir: 80,
+        wspd: 7,
+        visib: 10,
+        altim: 1021.7,
+        lat: 24.5561,
+        lon: -81.7596,
+        name: 'Key West Intl, FL, US',
+        clouds: [],
+      },
+    ])
+
+    expect(memphis.decoded.remarksItems).toContain('ceiling varying between 700 and 1300 ft')
+    expect(elPaso.decoded.remarksItems).toContain(
+      'virga southeast through overhead through northwest',
+    )
+    expect(elPaso.decoded.remarksItems).toContain(
+      'occasional in-cloud and cloud-to-ground lightning distant south',
+    )
+    expect(syracuse.decoded.remarksItems).toContain(
+      'sky condition at secondary location northwest unavailable',
+    )
+    expect(keyWest.decoded.remarksItems).toContain(
+      '3- or 6-hour precipitation amount indeterminable',
+    )
+  })
+
+  it('decodes weather-location remarks like VCSH NW', () => {
+    const result = mapNoaaMetarResponse([
+      {
+        icaoId: 'KGEG',
+        rawOb:
+          'METAR KGEG 100253Z 25011KT 10SM SCT045 BKN110 03/M09 A2990 RMK AO2 SLP143 VCSH NW T00331094 53002',
+        reportTime: '2026-03-10T02:53:00.000Z',
+        fltCat: 'VFR',
+        temp: 3.3,
+        dewp: -9.4,
+        wdir: 250,
+        wspd: 11,
+        visib: 10,
+        altim: 1012.8,
+        lat: 47.6199,
+        lon: -117.5338,
+        name: 'Spokane Intl, WA, US',
+        clouds: [
+          { cover: 'SCT', base: 4500 },
+          { cover: 'BKN', base: 11000 },
+        ],
+      },
+    ])
+
+    expect(result.decoded.remarksItems).toContain('showers in the vicinity northwest')
+  })
+
+  it('returns newest-first reports when mapping a history payload', () => {
+    const results = mapNoaaMetarResponses([
+      {
+        icaoId: 'KJFK',
+        rawOb: 'METAR KJFK 052051Z 06008KT 3SM BR OVC008 06/05 A3021 RMK AO2',
+        reportTime: '2026-03-05T20:51:00.000Z',
+        fltCat: 'IFR',
+        temp: 5.6,
+        dewp: 5,
+        wdir: 60,
+        wspd: 8,
+        visib: 3,
+        altim: 1023.1,
+        lat: 40.6392,
+        lon: -73.7639,
+        name: 'New York/JF Kennedy Intl, NY, US',
+      },
+      {
+        icaoId: 'KJFK',
+        rawOb: 'METAR KJFK 052151Z 06009KT 2SM -DZ BR OVC006 06/05 A3022 RMK AO2',
+        reportTime: '2026-03-05T21:51:00.000Z',
+        fltCat: 'IFR',
+        temp: 5.6,
+        dewp: 5,
+        wdir: 60,
+        wspd: 9,
+        visib: 2,
+        altim: 1023.5,
+        lat: 40.6392,
+        lon: -73.7639,
+        name: 'New York/JF Kennedy Intl, NY, US',
+      },
+    ])
+
+    expect(results).toHaveLength(2)
+    expect(results[0].observedAt).toBe('2026-03-05T21:51:00.000Z')
+    expect(results[1].observedAt).toBe('2026-03-05T20:51:00.000Z')
+  })
+
+  it('derives deterministic watchouts from low ceilings, low visibility, and saturation', () => {
+    const report = mapNoaaMetarResponse([
+      {
+        icaoId: 'KJFK',
+        rawOb:
+          'METAR KJFK 072351Z 18008G18KT 1/4SM R04R/4500FT -DZ FG VV003 06/06 A2997 RMK AO2 SLP149 56024',
+        reportTime: '2026-03-08T00:00:00.000Z',
+        fltCat: 'LIFR',
+        temp: 5.6,
+        dewp: 5.6,
+        wdir: 180,
+        wspd: 8,
+        wgst: 18,
+        visib: 0.25,
+        altim: 1015,
+        vertVis: 3,
+        wxString: '-DZ FG',
+        lat: 40.6392,
+        lon: -73.7639,
+        name: 'New York/JF Kennedy Intl, NY, US',
+        clouds: [{ cover: 'OVX', base: 300 }],
+      },
+    ])
+
+    expect(deriveMetarWatchouts(report)).toEqual([
+      expect.objectContaining({ severity: 'high', title: 'Visibility is severely reduced' }),
+      expect.objectContaining({ severity: 'high', title: 'Low-level obscuration is in play' }),
+      expect.objectContaining({ severity: 'high', title: 'Ceiling is in the basement' }),
+    ])
   })
 
   it('throws a distinct not-found error for empty NOAA responses', () => {

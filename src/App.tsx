@@ -2,6 +2,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import clsx from 'clsx'
 import ReactMarkdown from 'react-markdown'
 import {
+  ArrowLeftRight,
   LoaderCircle,
   Moon,
   RefreshCw,
@@ -13,11 +14,15 @@ import {
   Telescope,
   Wind,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import './App.css'
 import {
+  deriveMetarWatchouts,
+  getCeilingFeet,
   METAR_FETCH_ERROR,
+  type MetarLookupResponse,
   type MetarReport,
+  type Watchout,
   normalizeAirportCode,
   summarizeFlightCategory,
 } from './lib/metar'
@@ -35,24 +40,53 @@ import {
   saveThemeMode,
 } from './lib/theme'
 import type { PilotAnalysisRequest } from './lib/pilotAnalysis'
+import {
+  loadStoredPersonaMode,
+  PERSONA_COPY,
+  savePersonaMode,
+  type PersonaCopy,
+  type PersonaMode,
+} from './lib/persona'
 
 type RequestState = 'idle' | 'loading' | 'success' | 'error'
 type AnalysisState = 'idle' | 'streaming' | 'success' | 'error'
+type AnalysisEntry = {
+  error: string
+  markdown: string
+  status: AnalysisState
+}
 
 const MAX_HISTORY_ITEMS = 6
 
+const EMPTY_ANALYSIS_ENTRY: AnalysisEntry = {
+  error: '',
+  markdown: '',
+  status: 'idle',
+}
+
+function createEmptyAnalysisState(): Record<PersonaMode, AnalysisEntry> {
+  return {
+    metard: { ...EMPTY_ANALYSIS_ENTRY },
+    metarx: { ...EMPTY_ANALYSIS_ENTRY },
+  }
+}
+
 function App() {
   const [query, setQuery] = useState('')
+  const [compareEnabled, setCompareEnabled] = useState(false)
+  const [compareQuery, setCompareQuery] = useState('')
   const [status, setStatus] = useState<RequestState>('idle')
-  const [result, setResult] = useState<MetarReport | null>(null)
+  const [result, setResult] = useState<MetarLookupResponse | null>(null)
+  const [compareResult, setCompareResult] = useState<MetarLookupResponse | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [recentSearches, setRecentSearches] = useState<string[]>([])
   const [favorites, setFavorites] = useState<string[]>([])
   const [themeMode, setThemeMode] = useState<ThemeMode>('system')
+  const [personaMode, setPersonaMode] = useState<PersonaMode>('metarx')
   const [prefersDark, setPrefersDark] = useState(false)
-  const [analysisStatus, setAnalysisStatus] = useState<AnalysisState>('idle')
-  const [analysisMarkdown, setAnalysisMarkdown] = useState('')
-  const [analysisError, setAnalysisError] = useState('')
+  const [analysisByPersona, setAnalysisByPersona] = useState<Record<PersonaMode, AnalysisEntry>>(
+    () => createEmptyAnalysisState(),
+  )
   const analysisAbortRef = useRef<AbortController | null>(null)
   const analysisSectionRef = useRef<HTMLElement | null>(null)
 
@@ -60,6 +94,7 @@ function App() {
     setRecentSearches(loadStoredCodes(RECENT_SEARCHES_STORAGE_KEY))
     setFavorites(loadStoredCodes(FAVORITES_STORAGE_KEY))
     setThemeMode(loadStoredThemeMode())
+    setPersonaMode(loadStoredPersonaMode())
   }, [])
 
   useEffect(() => {
@@ -83,42 +118,76 @@ function App() {
   }, [prefersDark, themeMode])
 
   useEffect(() => {
+    document.documentElement.dataset.persona = personaMode
+    savePersonaMode(personaMode)
+  }, [personaMode])
+
+  useEffect(() => {
     return () => {
       analysisAbortRef.current?.abort()
     }
   }, [])
 
   const activeTheme = resolveTheme(themeMode, prefersDark)
+  const copy = PERSONA_COPY[personaMode]
+  const activeAnalysis = analysisByPersona[personaMode]
+  const analysisStatus = activeAnalysis.status
+  const analysisMarkdown = activeAnalysis.markdown
+  const analysisError = activeAnalysis.error
 
-  const performLookup = async (requestedCode?: string) => {
+  const performLookup = async (requestedCode?: string, requestedCompareCode?: string) => {
     const code = normalizeAirportCode(requestedCode ?? query)
+    const secondCode = compareEnabled
+      ? normalizeAirportCode(requestedCompareCode ?? compareQuery)
+      : ''
     setQuery(code)
+    if (compareEnabled) {
+      setCompareQuery(secondCode)
+    }
     resetAnalysis()
 
     if (code.length !== 4) {
+      setCompareResult(null)
       setResult(null)
       setStatus('error')
       setErrorMessage('Enter a 4-letter ICAO airport code.')
       return
     }
 
+    if (compareEnabled && secondCode.length !== 4) {
+      setCompareResult(null)
+      setResult(null)
+      setStatus('error')
+      setErrorMessage('Enter a 4-letter ICAO airport code for the comparison airport.')
+      return
+    }
+
+    if (compareEnabled && code === secondCode) {
+      setCompareResult(null)
+      setResult(null)
+      setStatus('error')
+      setErrorMessage('Choose two different airports to compare.')
+      return
+    }
+
     setResult(null)
+    setCompareResult(null)
     setStatus('loading')
     setErrorMessage('')
 
     try {
-      const response = await fetch(`/api/metar?code=${code}`)
-      const payload = (await response.json()) as MetarReport | { error?: string }
+      const [primaryPayload, secondaryPayload] = await Promise.all([
+        fetchMetarLookup(code),
+        compareEnabled ? fetchMetarLookup(secondCode) : Promise.resolve(null),
+      ])
 
-      if (!response.ok || !('rawMetar' in payload)) {
-        throw new Error('error' in payload ? payload.error : METAR_FETCH_ERROR)
-      }
-
-      setResult(payload)
+      setResult(primaryPayload)
+      setCompareResult(secondaryPayload)
       setStatus('success')
-      const nextRecents = upsertStoredCode(RECENT_SEARCHES_STORAGE_KEY, code, MAX_HISTORY_ITEMS)
+      const nextRecents = upsertLookupCodes([code, secondCode].filter(Boolean))
       setRecentSearches(nextRecents)
     } catch (error) {
+      setCompareResult(null)
       setResult(null)
       setStatus('error')
       setErrorMessage(error instanceof Error ? error.message : METAR_FETCH_ERROR)
@@ -130,12 +199,8 @@ function App() {
     void performLookup()
   }
 
-  const onToggleFavorite = () => {
-    if (!result) {
-      return
-    }
-
-    const nextFavorites = toggleStoredCode(FAVORITES_STORAGE_KEY, result.station.icao, MAX_HISTORY_ITEMS)
+  const onToggleFavorite = (airportCode: string) => {
+    const nextFavorites = toggleStoredCode(FAVORITES_STORAGE_KEY, airportCode, MAX_HISTORY_ITEMS)
     setFavorites(nextFavorites)
   }
 
@@ -153,9 +218,7 @@ function App() {
     })
   }
 
-  const isFavorite = result ? favorites.includes(result.station.icao) : false
   const themeLabel = themeMode === 'system' ? `${activeTheme} (auto)` : activeTheme
-  const displayedFlightRules = result ? summarizeFlightCategory(result.flightCategory ?? null) : ''
 
   const requestPilotAnalysis = async () => {
     if (!result) {
@@ -170,12 +233,15 @@ function App() {
     analysisAbortRef.current?.abort()
     const abortController = new AbortController()
     analysisAbortRef.current = abortController
-    setAnalysisStatus('streaming')
-    setAnalysisMarkdown('')
-    setAnalysisError('')
+    const requestPersonaMode = personaMode
+    setAnalysisStateForPersona(requestPersonaMode, {
+      error: '',
+      markdown: '',
+      status: 'streaming',
+    })
 
     try {
-      const payload: PilotAnalysisRequest = { report: result }
+      const payload: PilotAnalysisRequest = { report: result, personaMode: requestPersonaMode }
       const response = await fetch('/api/pilot-analysis', {
         method: 'POST',
         headers: {
@@ -198,28 +264,36 @@ function App() {
 
       await consumeEventStream(response.body, {
         onDone: () => {
-          setAnalysisStatus('success')
+          setAnalysisStateForPersona(requestPersonaMode, {
+            status: 'success',
+          })
         },
         onError: (message) => {
           hasStreamError = true
-          setAnalysisStatus('error')
-          setAnalysisError(message)
+          setAnalysisStateForPersona(requestPersonaMode, {
+            error: message,
+            status: 'error',
+          })
         },
         onToken: (token) => {
-          setAnalysisMarkdown((current) => current + token)
+          appendAnalysisMarkdown(requestPersonaMode, token)
         },
       })
 
       if (!hasStreamError) {
-        setAnalysisStatus('success')
+        setAnalysisStateForPersona(requestPersonaMode, {
+          status: 'success',
+        })
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         return
       }
 
-      setAnalysisStatus('error')
-      setAnalysisError(error instanceof Error ? error.message : 'Pilot analysis failed.')
+      setAnalysisStateForPersona(requestPersonaMode, {
+        error: error instanceof Error ? error.message : 'Pilot analysis failed.',
+        status: 'error',
+      })
     } finally {
       if (analysisAbortRef.current === abortController) {
         analysisAbortRef.current = null
@@ -230,9 +304,30 @@ function App() {
   const resetAnalysis = () => {
     analysisAbortRef.current?.abort()
     analysisAbortRef.current = null
-    setAnalysisStatus('idle')
-    setAnalysisMarkdown('')
-    setAnalysisError('')
+    setAnalysisByPersona(createEmptyAnalysisState())
+  }
+
+  const setAnalysisStateForPersona = (
+    mode: PersonaMode,
+    nextEntry: Partial<AnalysisEntry>,
+  ) => {
+    setAnalysisByPersona((current) => ({
+      ...current,
+      [mode]: {
+        ...current[mode],
+        ...nextEntry,
+      },
+    }))
+  }
+
+  const appendAnalysisMarkdown = (mode: PersonaMode, token: string) => {
+    setAnalysisByPersona((current) => ({
+      ...current,
+      [mode]: {
+        ...current[mode],
+        markdown: current[mode].markdown + token,
+      },
+    }))
   }
 
   return (
@@ -254,19 +349,34 @@ function App() {
           transition={{ delay: 0.08, duration: 0.45 }}
         >
           <div className="top-bar">
-            <span className="top-bar-logo">MetarX</span>
+              <span className="top-bar-logo">{copy.brand}</span>
             <div className="top-bar-divider" />
-            <span className="top-bar-subtitle">Pilot Weather Briefing</span>
+            <span className="top-bar-subtitle">{copy.subtitle}</span>
             <div className="top-bar-spacer" />
-            <button
-              aria-label={`Theme mode: ${themeLabel}`}
-              className="theme-button"
-              type="button"
-              title={`Theme: ${themeLabel}`}
-              onClick={onThemeChange}
-            >
-              {activeTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
-            </button>
+            <div className="top-bar-controls">
+              <div aria-label="Persona mode" className="persona-switcher" role="group">
+                {(['metarx', 'metard'] as const).map((mode) => (
+                  <button
+                    aria-pressed={personaMode === mode}
+                    className="persona-option"
+                    key={mode}
+                    type="button"
+                    onClick={() => setPersonaMode(mode)}
+                  >
+                    {PERSONA_COPY[mode].brand}
+                  </button>
+                ))}
+              </div>
+              <button
+                aria-label={`Theme mode: ${themeLabel}`}
+                className="theme-button"
+                type="button"
+                title={`Theme: ${themeLabel}`}
+                onClick={onThemeChange}
+              >
+                {activeTheme === 'dark' ? <Moon size={18} /> : <Sun size={18} />}
+              </button>
+            </div>
           </div>
 
           <div className="hero-search">
@@ -296,15 +406,53 @@ function App() {
                   {status === 'loading' ? (
                     <>
                       <LoaderCircle className="spin" size={18} />
-                      Loading
+                      {copy.searchLoadingButton}
                     </>
                   ) : (
                     <>
                       <Telescope size={18} />
-                      Decode METAR
+                      {copy.searchIdleButton}
                     </>
                   )}
                 </motion.button>
+              </div>
+              <div className="compare-controls">
+                <button
+                  aria-pressed={compareEnabled}
+                  className={clsx('compare-toggle', compareEnabled && 'compare-toggle--active')}
+                  type="button"
+                  onClick={() => {
+                    setCompareEnabled((current) => {
+                      const nextValue = !current
+                      if (!nextValue) {
+                        setCompareQuery('')
+                        setCompareResult(null)
+                      }
+                      return nextValue
+                    })
+                  }}
+                >
+                  <ArrowLeftRight size={16} />
+                  {compareEnabled ? copy.compareToggleOn : copy.compareToggleOff}
+                </button>
+                {compareEnabled ? (
+                  <label className="search-input-group search-input-group--compare" htmlFor="compare-airport-code">
+                    <ArrowLeftRight className="search-icon" size={18} />
+                    <input
+                      aria-label={copy.compareInputLabel}
+                      id="compare-airport-code"
+                      name="compare-airport-code"
+                      type="text"
+                      inputMode="text"
+                      autoCapitalize="characters"
+                      autoCorrect="off"
+                      maxLength={4}
+                      value={compareQuery}
+                      placeholder="KAUS"
+                      onChange={(event) => setCompareQuery(normalizeAirportCode(event.target.value))}
+                    />
+                  </label>
+                ) : null}
               </div>
             </form>
           </div>
@@ -319,23 +467,11 @@ function App() {
           >
             <div className="panel-header report-header">
               <div>
-                <span className="panel-kicker">Operational weather report</span>
-                <h2>Current conditions</h2>
+                <span className="panel-kicker">
+                  {compareResult ? copy.compareKicker : copy.reportKicker}
+                </span>
+                <h2>{compareResult ? copy.compareTitle : copy.reportTitle}</h2>
               </div>
-              {result ? (
-                <div className="panel-actions" role="group" aria-label="Result actions">
-                  <motion.button
-                    className="favorite-button"
-                    type="button"
-                    onClick={onToggleFavorite}
-                    whileHover={{ scale: 1.03, y: -2 }}
-                    whileTap={{ scale: 0.97 }}
-                  >
-                    <Star size={16} fill={isFavorite ? 'currentColor' : 'none'} />
-                    {isFavorite ? 'Saved' : 'Save'}
-                  </motion.button>
-                </div>
-              ) : null}
             </div>
 
             <AnimatePresence mode="wait">
@@ -348,7 +484,7 @@ function App() {
                   exit={{ opacity: 0, y: -8 }}
                 >
                   <div className="loading-radar" />
-                  <p>Collecting the latest METAR and decoding station conditions.</p>
+                  <p>{copy.loadingMessage}</p>
                   <div className="loading-bars">
                     <span />
                     <span />
@@ -366,7 +502,7 @@ function App() {
                   exit={{ opacity: 0, y: -8 }}
                 >
                   <ShieldAlert size={28} />
-                  <h3>Lookup failed</h3>
+                  <h3>{copy.errorTitle}</h3>
                   <p>{errorMessage}</p>
                 </motion.div>
               ) : null}
@@ -380,181 +516,119 @@ function App() {
                   exit={{ opacity: 0, y: -8 }}
                 >
                   <Wind size={28} />
-                  <h3>Start with any ICAO code</h3>
-                  <p>Try KJFK, EGLL, KLAX, or the airport you track most often.</p>
+                  <h3>{copy.idleTitle}</h3>
+                  <p>{copy.idleBody}</p>
                 </motion.div>
               ) : null}
 
               {status === 'success' && result ? (
                 <motion.div
-                  key={result.station.icao}
-                  className="result-content"
+                  key={`${result.station.icao}:${compareResult?.station.icao ?? 'single'}`}
+                  className={clsx('result-content', compareResult && 'result-content--compare')}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
                 >
-                  <motion.header
-                    className="station-header"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0 }}
-                  >
-                    <div>
-                      <span className="station-code">{result.station.icao}</span>
-                      <h3>{result.station.name}</h3>
-                      <p className="station-subtitle">Observed {formatUtc(result.observedAt)} UTC</p>
-                    </div>
-                    <div
-                      className={clsx(
-                        'flight-chip',
-                        result.flightCategory?.toLowerCase() ?? 'unknown',
-                      )}
+                  <div className={clsx('airport-brief-grid', compareResult && 'airport-brief-grid--compare')}>
+                    <AirportBriefing
+                      copy={copy}
+                      history={result.history}
+                      isFavorite={favorites.includes(result.station.icao)}
+                      onToggleFavorite={() => onToggleFavorite(result.station.icao)}
+                      report={result}
                     >
-                      {summarizeFlightCategory(result.flightCategory)}
-                    </div>
-                  </motion.header>
-
-                  <motion.section
-                    className="raw-card"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.1 }}
-                  >
-                    <div className="raw-card-header">Raw METAR</div>
-                    <code>{result.rawMetar}</code>
-                  </motion.section>
-
-                  <motion.div
-                    className="report-grid"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.15 }}
-                  >
-                    <ReportSection
-                      kicker="Core"
-                      title="Flight and atmosphere"
-                      accent="accent-cyan"
-                      items={[
-                        { label: 'Flight Rules', value: displayedFlightRules },
-                        { label: 'Wind', value: result.decoded.wind.text },
-                        { label: 'Visibility', value: result.decoded.visibility.text },
-                        {
-                          label: 'Runway Visual Range',
-                          value: result.decoded.runwayVisualRange.text,
-                        },
-                        {
-                          label: 'Vertical Visibility',
-                          value: result.decoded.verticalVisibility.text,
-                        },
-                        { label: 'Altimeter', value: result.decoded.altimeter.text },
-                      ]}
-                    />
-                    <ReportSection
-                      kicker="Thermal"
-                      title="Temperature and moisture"
-                      accent="accent-mint"
-                      items={[
-                        { label: 'Temperature', value: result.decoded.temperature.text },
-                        { label: 'Dew Point', value: result.decoded.dewPoint.text },
-                        { label: 'Clouds', value: result.decoded.cloudsText },
-                        { label: 'Weather', value: result.decoded.weather.text },
-                      ]}
-                    />
-                  </motion.div>
-
-                  <motion.div
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
-                  >
-                    <RemarksCard items={result.decoded.remarksItems} />
-                  </motion.div>
-
-                  <motion.section
-                    ref={analysisSectionRef}
-                    className={clsx(
-                      'analysis-card',
-                      analysisStatus === 'idle' && 'analysis-card--idle',
-                    )}
-                    role="region"
-                    aria-label="Pilot perspective"
-                    initial={{ opacity: 0, y: 12 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.24, duration: 0.3 }}
-                  >
-                    <div className="analysis-header">
-                      <div>
-                        <span className="panel-kicker">Pilot perspective</span>
-                      </div>
-                      {analysisStatus === 'streaming' ? (
-                        <div className="analysis-status">
-                          <LoaderCircle className="spin" size={16} />
-                          Streaming
-                        </div>
-                      ) : null}
-                      {analysisStatus === 'success' ? (
-                        <motion.button
-                          className="analysis-button"
-                          type="button"
-                          onClick={() => void requestPilotAnalysis()}
-                          whileHover={{ scale: 1.03, y: -2 }}
-                          whileTap={{ scale: 0.97 }}
+                      {!compareResult ? (
+                        <motion.section
+                          ref={analysisSectionRef}
+                          className={clsx(
+                            'analysis-card',
+                            analysisStatus === 'idle' && 'analysis-card--idle',
+                          )}
+                          role="region"
+                          aria-label={copy.analysisRegionLabel}
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.24, duration: 0.3 }}
                         >
-                          <RefreshCw size={16} />
-                          Refresh Perspective
-                        </motion.button>
-                      ) : null}
-                    </div>
-
-                    {analysisStatus === 'idle' ? (
-                      <div className="analysis-empty-state">
-                        <p>
-                          Want the operational take? Generate an instructor-style read on this
-                          METAR.
-                        </p>
-                        <motion.button
-                          className="analysis-button analysis-button--primary"
-                          type="button"
-                          onClick={() => void requestPilotAnalysis()}
-                          whileHover={{ scale: 1.03, y: -2 }}
-                          whileTap={{ scale: 0.97 }}
-                        >
-                          <Sparkles size={16} />
-                          Pilot Perspective
-                        </motion.button>
-                      </div>
-                    ) : analysisStatus === 'error' ? (
-                      <div className="analysis-body">
-                        <div className="analysis-error">{analysisError}</div>
-                        <motion.button
-                          className="analysis-button analysis-button--primary"
-                          type="button"
-                          onClick={() => void requestPilotAnalysis()}
-                          whileHover={{ scale: 1.03, y: -2 }}
-                          whileTap={{ scale: 0.97 }}
-                        >
-                          <RefreshCw size={16} />
-                          Retry Perspective
-                        </motion.button>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="analysis-markdown">
-                          <ReactMarkdown>{analysisMarkdown}</ReactMarkdown>
-                        </div>
-                        {analysisStatus === 'streaming' ? (
-                          <div className="analysis-streaming-indicator">
-                            <span />
-                            Senior-pilot perspective is streaming in.
+                          <div className="analysis-header">
+                            <div>
+                              <span className="panel-kicker">{copy.analysisKicker}</span>
+                            </div>
+                            {analysisStatus === 'streaming' ? (
+                              <div className="analysis-status">
+                                <LoaderCircle className="spin" size={16} />
+                                {copy.analysisStreamingLabel}
+                              </div>
+                            ) : null}
+                            {analysisStatus === 'success' ? (
+                              <motion.button
+                                className="analysis-button"
+                                type="button"
+                                onClick={() => void requestPilotAnalysis()}
+                                whileHover={{ scale: 1.03, y: -2 }}
+                                whileTap={{ scale: 0.97 }}
+                              >
+                                <RefreshCw size={16} />
+                                {copy.analysisRefreshButton}
+                              </motion.button>
+                            ) : null}
                           </div>
-                        ) : null}
-                      </>
-                    )}
-                  </motion.section>
 
-                  <footer className="result-footer">
-                    <span>Source NOAA</span>
-                  </footer>
+                          {analysisStatus === 'idle' ? (
+                            <div className="analysis-empty-state">
+                              <p>{copy.analysisEmpty}</p>
+                              <motion.button
+                                className="analysis-button analysis-button--primary"
+                                type="button"
+                                onClick={() => void requestPilotAnalysis()}
+                                whileHover={{ scale: 1.03, y: -2 }}
+                                whileTap={{ scale: 0.97 }}
+                              >
+                                <Sparkles size={16} />
+                                {copy.analysisIdleButton}
+                              </motion.button>
+                            </div>
+                          ) : analysisStatus === 'error' ? (
+                            <div className="analysis-body">
+                              <div className="analysis-error">{analysisError}</div>
+                              <motion.button
+                                className="analysis-button analysis-button--primary"
+                                type="button"
+                                onClick={() => void requestPilotAnalysis()}
+                                whileHover={{ scale: 1.03, y: -2 }}
+                                whileTap={{ scale: 0.97 }}
+                              >
+                                <RefreshCw size={16} />
+                                {copy.analysisRetryButton}
+                              </motion.button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="analysis-markdown">
+                                <ReactMarkdown>{analysisMarkdown}</ReactMarkdown>
+                              </div>
+                              {analysisStatus === 'streaming' ? (
+                                <div className="analysis-streaming-indicator">
+                                  <span />
+                                  {copy.analysisStreamingNote}
+                                </div>
+                              ) : null}
+                            </>
+                          )}
+                        </motion.section>
+                      ) : null}
+                    </AirportBriefing>
+
+                    {compareResult ? (
+                      <AirportBriefing
+                        copy={copy}
+                        history={compareResult.history}
+                        isFavorite={favorites.includes(compareResult.station.icao)}
+                        onToggleFavorite={() => onToggleFavorite(compareResult.station.icao)}
+                        report={compareResult}
+                      />
+                    ) : null}
+                  </div>
                 </motion.div>
               ) : null}
             </AnimatePresence>
@@ -567,15 +641,15 @@ function App() {
             transition={{ delay: 0.18, duration: 0.45 }}
           >
             <HistoryCard
-              title="Recent searches"
+              title={copy.recentTitle}
               items={recentSearches}
-              emptyLabel="No airport lookups yet."
+              emptyLabel={copy.recentEmpty}
               onSelect={(code) => void performLookup(code)}
             />
             <HistoryCard
-              title="Favorites"
+              title={copy.favoritesTitle}
               items={favorites}
-              emptyLabel="Save stations for quick access."
+              emptyLabel={copy.favoritesEmpty}
               onSelect={(code) => void performLookup(code)}
             />
           </motion.aside>
@@ -624,14 +698,16 @@ function ReportSection({ accent, items, kicker, title }: ReportSectionProps) {
 
 type RemarksCardProps = {
   items: string[]
+  kicker: string
+  title: string
 }
 
-function RemarksCard({ items }: RemarksCardProps) {
+function RemarksCard({ items, kicker, title }: RemarksCardProps) {
   return (
     <section className="remarks-card">
       <div className="report-section-header">
-        <span className="panel-kicker">Decoded remarks</span>
-        <h4>Operational notes</h4>
+        <span className="panel-kicker">{kicker}</span>
+        <h4>{title}</h4>
       </div>
       <div className="remarks-list">
         {items.map((item) => (
@@ -683,6 +759,236 @@ function HistoryCard({ title, kicker, items, emptyLabel, onSelect }: HistoryCard
   )
 }
 
+type AirportBriefingProps = {
+  children?: ReactNode
+  copy: PersonaCopy
+  history: MetarReport[]
+  isFavorite: boolean
+  onToggleFavorite: () => void
+  report: MetarReport
+}
+
+function AirportBriefing({
+  children,
+  copy,
+  history,
+  isFavorite,
+  onToggleFavorite,
+  report,
+}: AirportBriefingProps) {
+  const displayedFlightRules = summarizeFlightCategory(report.flightCategory ?? null)
+  const watchouts = deriveMetarWatchouts(report)
+
+  return (
+    <article className="airport-briefing">
+      <motion.header
+        className="station-header"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0 }}
+      >
+        <div>
+          <span className="station-code">{report.station.icao}</span>
+          <h3>{report.station.name}</h3>
+          <p className="station-subtitle">
+            {copy.observedPrefix} {formatUtc(report.observedAt)} UTC
+          </p>
+        </div>
+        <div className="station-header-side">
+          <div className={clsx('flight-chip', report.flightCategory?.toLowerCase() ?? 'unknown')}>
+            {displayedFlightRules}
+          </div>
+          <motion.button
+            className="favorite-button"
+            type="button"
+            onClick={onToggleFavorite}
+            whileHover={{ scale: 1.03, y: -2 }}
+            whileTap={{ scale: 0.97 }}
+          >
+            <Star size={16} fill={isFavorite ? 'currentColor' : 'none'} />
+            {isFavorite ? copy.saveActive : copy.saveIdle}
+          </motion.button>
+        </div>
+      </motion.header>
+
+      <motion.section
+        className="raw-card"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+      >
+        <div className="raw-card-header">{copy.rawMetarLabel}</div>
+        <code>{report.rawMetar}</code>
+      </motion.section>
+
+      <motion.div
+        className="report-grid"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.15 }}
+      >
+        <ReportSection
+          kicker={copy.reportSections.atmosphere.kicker}
+          title={copy.reportSections.atmosphere.title}
+          accent="accent-cyan"
+          items={[
+            { label: copy.metricLabels.flightRules, value: displayedFlightRules },
+            { label: copy.metricLabels.wind, value: report.decoded.wind.text },
+            { label: copy.metricLabels.visibility, value: report.decoded.visibility.text },
+            {
+              label: copy.metricLabels.runwayVisualRange,
+              value: report.decoded.runwayVisualRange.text,
+            },
+            {
+              label: copy.metricLabels.verticalVisibility,
+              value: report.decoded.verticalVisibility.text,
+            },
+            { label: copy.metricLabels.altimeter, value: report.decoded.altimeter.text },
+          ]}
+        />
+        <ReportSection
+          kicker={copy.reportSections.thermal.kicker}
+          title={copy.reportSections.thermal.title}
+          accent="accent-mint"
+          items={[
+            { label: copy.metricLabels.temperature, value: report.decoded.temperature.text },
+            { label: copy.metricLabels.dewPoint, value: report.decoded.dewPoint.text },
+            { label: copy.metricLabels.clouds, value: report.decoded.cloudsText },
+            { label: copy.metricLabels.weather, value: report.decoded.weather.text },
+          ]}
+        />
+      </motion.div>
+
+      <motion.div
+        className="supplemental-grid"
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.18 }}
+      >
+        <TrendStripCard copy={copy} history={history} report={report} />
+        <WatchoutsCard copy={copy} watchouts={watchouts} />
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+      >
+        <RemarksCard
+          items={report.decoded.remarksItems}
+          kicker={copy.remarks.kicker}
+          title={copy.remarks.title}
+        />
+      </motion.div>
+
+      {children}
+
+      <footer className="result-footer">
+        <span>Source NOAA</span>
+      </footer>
+    </article>
+  )
+}
+
+type TrendStripCardProps = {
+  copy: PersonaCopy
+  history: MetarReport[]
+  report: MetarReport
+}
+
+function TrendStripCard({ copy, history, report }: TrendStripCardProps) {
+  const timeline = (history.length > 0 ? history : [report])
+    .slice(0, 8)
+    .sort((left, right) => new Date(left.observedAt).getTime() - new Date(right.observedAt).getTime())
+
+  return (
+    <section className="trend-card">
+      <div className="report-section-header">
+        <span className="panel-kicker">{copy.historyKicker}</span>
+        <h4>{copy.historyTitle}</h4>
+      </div>
+      <div className="trend-strip" role="list" aria-label={copy.historyTitle}>
+        {timeline.length > 0 ? (
+          timeline.map((entry) => {
+            const timeLabel = formatTrendTime(entry.observedAt)
+            const ceilingFeet = getCeilingFeet(entry)
+            const windLabel = entry.decoded.wind.speedKt != null ? `${entry.decoded.wind.speedKt} kt` : 'NR'
+            const pressureLabel =
+              entry.decoded.altimeter.inHg != null ? entry.decoded.altimeter.inHg.toFixed(2) : 'NR'
+
+            return (
+              <div className="trend-point" key={`${entry.station.icao}-${entry.observedAt}`} role="listitem">
+                <div className="trend-point-header">
+                  <span>{timeLabel}</span>
+                  <span
+                    className={clsx(
+                      'trend-category',
+                      entry.flightCategory?.toLowerCase() ?? 'unknown',
+                    )}
+                  >
+                    {summarizeFlightCategory(entry.flightCategory)}
+                  </span>
+                </div>
+                <dl className="trend-metrics">
+                  <div>
+                    <dt>Vis</dt>
+                    <dd>{formatTrendVisibility(entry.decoded.visibility.miles)}</dd>
+                  </div>
+                  <div>
+                    <dt>Ceil</dt>
+                    <dd>{ceilingFeet != null ? `${ceilingFeet.toLocaleString()} ft` : 'None'}</dd>
+                  </div>
+                  <div>
+                    <dt>Wind</dt>
+                    <dd>{windLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>Alt</dt>
+                    <dd>{pressureLabel}</dd>
+                  </div>
+                </dl>
+              </div>
+            )
+          })
+        ) : (
+          <p className="empty-copy">{copy.historyEmpty}</p>
+        )}
+      </div>
+    </section>
+  )
+}
+
+type WatchoutsCardProps = {
+  copy: PersonaCopy
+  watchouts: Watchout[]
+}
+
+function WatchoutsCard({ copy, watchouts }: WatchoutsCardProps) {
+  return (
+    <section className="watchouts-card">
+      <div className="report-section-header">
+        <span className="panel-kicker">{copy.watchoutsKicker}</span>
+        <h4>{copy.watchoutsTitle}</h4>
+      </div>
+      {watchouts.length > 0 ? (
+        <div className="watchouts-list">
+          {watchouts.map((watchout) => (
+            <article className={clsx('watchout-item', `watchout-${watchout.severity}`)} key={`${watchout.title}-${watchout.detail}`}>
+              <div className="watchout-heading">
+                <span className="watchout-severity">{watchout.severity}</span>
+                <strong>{watchout.title}</strong>
+              </div>
+              <p>{watchout.detail}</p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="empty-copy">{copy.watchoutsEmpty}</p>
+      )}
+    </section>
+  )
+}
+
 function formatUtc(value: string) {
   const date = new Date(value)
 
@@ -691,6 +997,54 @@ function formatUtc(value: string) {
     timeStyle: 'short',
     timeZone: 'UTC',
   }).format(date)
+}
+
+function formatTrendTime(value: string) {
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  }).format(new Date(value))
+}
+
+function formatTrendVisibility(value: number | null | undefined) {
+  if (value == null) {
+    return 'NR'
+  }
+
+  if (value >= 10) {
+    return '10+ SM'
+  }
+
+  if (value < 1) {
+    return `${value.toFixed(2)} SM`
+  }
+
+  return `${value} SM`
+}
+
+async function fetchMetarLookup(code: string) {
+  const response = await fetch(`/api/metar?code=${code}`)
+  const payload = (await response.json()) as MetarLookupResponse | { error?: string }
+
+  if (!response.ok || !('rawMetar' in payload)) {
+    throw new Error('error' in payload ? payload.error : METAR_FETCH_ERROR)
+  }
+
+  return {
+    ...payload,
+    history: Array.isArray(payload.history) ? payload.history : [payload],
+  } satisfies MetarLookupResponse
+}
+
+function upsertLookupCodes(codes: string[]) {
+  let nextRecentSearches = loadStoredCodes(RECENT_SEARCHES_STORAGE_KEY)
+
+  for (const code of [...codes].reverse()) {
+    nextRecentSearches = upsertStoredCode(RECENT_SEARCHES_STORAGE_KEY, code, MAX_HISTORY_ITEMS)
+  }
+
+  return nextRecentSearches
 }
 
 function shouldScrollAnalysisSectionIntoView(element: HTMLElement) {
