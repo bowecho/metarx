@@ -1,15 +1,57 @@
 import { describe, expect, it } from 'vitest'
 import {
+  decodeCloudRemark,
+  decodeLightningDescription,
   deriveMetarWatchouts,
+  formatRemarkTimestamp,
   mapNoaaMetarResponse,
   mapNoaaMetarResponses,
   METAR_NOT_FOUND_ERROR,
   normalizeAirportCode,
+  parseLocationSequence,
+  parseLocationToken,
+  parseVisibilityValue,
 } from './metar'
 
 describe('normalizeAirportCode', () => {
   it('keeps only letters, uppercases them, and trims to four characters', () => {
     expect(normalizeAirportCode(' kjfk-123 ')).toBe('KJFK')
+  })
+})
+
+describe('remark parsing helpers', () => {
+  it('parses location tokens and sequences', () => {
+    expect(parseLocationToken(undefined)).toBeNull()
+    expect(parseLocationToken('NE')).toBe('northeast')
+    expect(parseLocationToken('OHD-ALQDS')).toBe('overhead through all quadrants')
+    expect(parseLocationToken('NE-BOGUS')).toBeNull()
+
+    expect(parseLocationSequence(['AND'], 0)).toBeNull()
+    expect(parseLocationSequence(['NE', 'AND', 'SE'], 0)).toEqual({
+      nextIndex: 3,
+      text: 'northeast and southeast',
+    })
+  })
+
+  it('formats remark timestamps and visibility values', () => {
+    expect(formatRemarkTimestamp('45')).toBe(':45Z')
+    expect(formatRemarkTimestamp('0228')).toBe('02:28Z')
+    expect(parseVisibilityValue([], 0)).toBeNull()
+    expect(parseVisibilityValue(['1', '1/2'], 0)).toEqual({
+      nextIndex: 2,
+      value: '1 1/2',
+    })
+    expect(parseVisibilityValue(['3'], 0)).toEqual({
+      nextIndex: 1,
+      value: '3',
+    })
+  })
+
+  it('decodes cloud and lightning remark helper branches', () => {
+    expect(decodeCloudRemark('OVC123')).toBe('overcast at 12,300 ft')
+    expect(decodeLightningDescription('LTG')).toBe('lightning')
+    expect(decodeLightningDescription('XYZ')).toBeNull()
+    expect(decodeLightningDescription('LTGBOGUS')).toBeNull()
   })
 })
 
@@ -284,6 +326,36 @@ describe('mapNoaaMetarResponse', () => {
     expect(result.decoded.remarksItems).toContain(
       'thunderstorm overhead through all quadrants moving east',
     )
+    expect(result.decoded.weather.text).toBe('Thunderstorm Rain, Mist')
+  })
+
+  it('decodes heavy thunderstorm rain tokens instead of passing raw METAR codes through', () => {
+    const result = mapNoaaMetarResponse([
+      {
+        icaoId: 'KORD',
+        rawOb:
+          'METAR KORD 110334Z 22018G30KT 1SM +TSRA BR BKN018CB OVC040 18/16 A2971 RMK AO2 PK WND 22030/0331',
+        reportTime: '2026-03-11T03:34:00.000Z',
+        fltCat: 'IFR',
+        temp: 18,
+        dewp: 16,
+        wdir: 220,
+        wspd: 18,
+        wgst: 30,
+        visib: 1,
+        altim: 1006.1,
+        wxString: '+TSRA BR',
+        lat: 41.9786,
+        lon: -87.9048,
+        name: "Chicago O'Hare Intl, IL, US",
+        clouds: [
+          { cover: 'BKN', base: 1800 },
+          { cover: 'OVC', base: 4000 },
+        ],
+      },
+    ])
+
+    expect(result.decoded.weather.text).toBe('Heavy Thunderstorm Rain, Mist')
   })
 
   it('decodes compact begin/end timing groups like RAB14E24', () => {

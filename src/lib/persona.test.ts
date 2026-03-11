@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   loadStoredPersonaMode,
   PERSONA_COPY,
@@ -25,7 +25,30 @@ describe('persona helpers', () => {
 
   it('provides distinct copy for both personas', () => {
     expect(PERSONA_COPY.metarx.brand).toBe('MetarX')
-    expect(PERSONA_COPY.metard.brand).toBe('MetarD')
+    expect(PERSONA_COPY.metard.brand).toBe('MetarZ')
     expect(PERSONA_COPY.metard.searchIdleButton).not.toBe(PERSONA_COPY.metarx.searchIdleButton)
+  })
+
+  it('ignores localStorage write failures', () => {
+    vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('storage denied')
+    })
+
+    expect(() => savePersonaMode('metard')).not.toThrow()
+  })
+
+  it('falls back to metarx when browser storage is unavailable', () => {
+    const originalStorage = window.localStorage
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: undefined,
+    })
+
+    expect(loadStoredPersonaMode()).toBe('metarx')
+
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: originalStorage,
+    })
   })
 })

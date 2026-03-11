@@ -17,11 +17,10 @@ MetarX is a single-page aviation weather app for quickly looking up an airport M
 - ICAO airport code lookup with normalization and validation
 - Live METAR retrieval from the official NOAA Aviation Weather source
 - Decoded weather breakdown for flight category, wind including gusts, visibility, runway visual range, vertical visibility, clouds, temperature, dew point, pressure, weather, and remarks
-- Deterministic watchouts that flag the most operationally relevant issues in the current METAR
-- Recent METAR trend strip using the last several NOAA reports for the selected airport
+- Recent METAR trend strip using the latest NOAA reports for the selected airport, with compact visual charts for visibility, ceiling, wind, and altimeter
 - Side-by-side airport comparison mode for contrasting two current METAR briefings at once
 - Optional pilot-focused LLM analysis with streamed markdown output and an instructor-style perspective
-- Dual persona modes: professional `MetarX` and chaotic-but-safe `MetarD`
+- Dual persona modes: professional `MetarX` and chaotic-but-safe `MetarZ`
 - Recent searches and favorites stored in local storage
 - System-aware light/dark theme with manual override
 - Responsive layout for phone, laptop, and desktop screens
@@ -44,8 +43,6 @@ Required variable:
 - `OPENROUTER_API_KEY`
 
 The pilot-analysis route uses the fixed OpenRouter model `google/gemini-3-flash-preview`.
-
-For local development, if `MetarX/.env.local` is absent, the server also falls back to `/home/tonyc/source/tonybot/.env.local` for the OpenRouter API key.
 
 The Vite dev server exposes the frontend plus local `/api/metar` and `/api/pilot-analysis` middleware so local development matches the deployed app contract.
 

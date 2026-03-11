@@ -1,21 +1,15 @@
+import { loadStoredJson, saveStoredValue } from './browserStorage'
+
+export const MAX_STORED_CODES = 6
 export const RECENT_SEARCHES_STORAGE_KEY = 'metarx:recent-searches'
 export const FAVORITES_STORAGE_KEY = 'metarx:favorites'
 
 export function loadStoredCodes(key: string) {
-  if (typeof window === 'undefined') {
-    return [] as string[]
-  }
+  const parsedValue = loadStoredJson<unknown>(key, [])
 
-  try {
-    const rawValue = window.localStorage.getItem(key)
-    const parsedValue = rawValue ? (JSON.parse(rawValue) as unknown) : []
-
-    return Array.isArray(parsedValue)
-      ? parsedValue.filter((item): item is string => typeof item === 'string')
-      : []
-  } catch {
-    return []
-  }
+  return Array.isArray(parsedValue)
+    ? parsedValue.filter((item): item is string => typeof item === 'string')
+    : []
 }
 
 export function upsertStoredCode(key: string, value: string, maxItems: number) {
@@ -36,9 +30,5 @@ export function toggleStoredCode(key: string, value: string, maxItems: number) {
 }
 
 function persistCodes(key: string, value: string[]) {
-  if (typeof window === 'undefined') {
-    return
-  }
-
-  window.localStorage.setItem(key, JSON.stringify(value))
+  saveStoredValue(key, JSON.stringify(value))
 }

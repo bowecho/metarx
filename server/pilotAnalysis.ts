@@ -1,35 +1,31 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { streamText } from 'ai'
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import {
+  consumePilotAnalysisRateLimit,
+} from './pilotAnalysis/rateLimit'
+import {
+  getClientAddress,
+  isAllowedOrigin,
+  isJsonRequest,
+  isPilotAnalysisRequest,
+  readJsonBody,
+  type RequestLike,
+} from './pilotAnalysis/request'
+import {
+  openEventStream,
+  sendJson,
+  type ResponseLike,
+  writeSseEvent,
+} from './pilotAnalysis/sse'
 import {
   buildPilotAnalysisPrompt,
   getPilotAnalysisTemperature,
   getPilotAnalysisSystemPrompt,
   PILOT_ANALYSIS_MODEL,
-  type PilotAnalysisRequest,
 } from '../src/lib/pilotAnalysis'
 import { resolvePersonaMode } from '../src/lib/persona'
 
-const FALLBACK_ENV_PATH = '/home/tonyc/source/tonybot/.env.local'
-
-type RequestLike = AsyncIterable<Uint8Array | string> & {
-  body?: unknown
-  method?: string
-}
-
-type ResponseLike = {
-  end: (chunk?: string) => void
-  setHeader: (name: string, value: string) => void
-  statusCode: number
-  write: (chunk: string) => void
-  headersSent?: boolean
-  flushHeaders?: () => void
-}
-
-type EnvCache = Record<string, string>
-
-let envCache: EnvCache | null = null
+export { resetPilotAnalysisRateLimit } from './pilotAnalysis/rateLimit'
 
 export async function handlePilotAnalysisRequest(request: RequestLike, response: ResponseLike) {
   if (request.method && request.method !== 'POST') {
@@ -37,15 +33,30 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
     return
   }
 
-  const payload = await readJsonBody(request)
+  if (!isJsonRequest(request)) {
+    sendJson(response, 415, { error: 'Pilot analysis requires an application/json request body.' })
+    return
+  }
 
-  if (!isPilotAnalysisRequest(payload)) {
-    sendJson(response, 400, { error: 'A decoded METAR report is required for pilot analysis.' })
+  if (!isAllowedOrigin(request)) {
+    sendJson(response, 403, { error: 'Cross-origin pilot analysis requests are not allowed.' })
+    return
+  }
+
+  if (!consumePilotAnalysisRateLimit(getClientAddress(request))) {
+    sendJson(response, 429, { error: 'Pilot analysis is temporarily rate limited. Try again shortly.' })
     return
   }
 
   try {
-    const apiKey = resolveEnvValue('OPENROUTER_API_KEY')
+    const payload = await readJsonBody(request)
+
+    if (!isPilotAnalysisRequest(payload)) {
+      sendJson(response, 400, { error: 'A decoded METAR report is required for pilot analysis.' })
+      return
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) {
       throw new Error('OpenRouter API key is not configured.')
     }
@@ -61,11 +72,7 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
       prompt: buildPilotAnalysisPrompt(payload.report, personaMode),
     })
 
-    response.statusCode = 200
-    response.setHeader('Cache-Control', 'no-cache, no-transform')
-    response.setHeader('Connection', 'keep-alive')
-    response.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-    response.flushHeaders?.()
+    openEventStream(response)
 
     for await (const chunk of result.textStream) {
       writeSseEvent(response, 'token', chunk)
@@ -74,6 +81,20 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
     writeSseEvent(response, 'done', '')
     response.end()
   } catch (error) {
+    if (
+      !response.headersSent &&
+      error instanceof Error &&
+      (error.message === 'Pilot analysis request body must be valid JSON.' ||
+        error.message === 'Pilot analysis request body is too large.')
+    ) {
+      sendJson(
+        response,
+        error.message === 'Pilot analysis request body is too large.' ? 413 : 400,
+        { error: error.message },
+      )
+      return
+    }
+
     if (!response.headersSent) {
       sendJson(response, 500, {
         error: error instanceof Error ? error.message : 'Pilot analysis failed.',
@@ -88,85 +109,4 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
     )
     response.end()
   }
-}
-
-function sendJson(response: ResponseLike, statusCode: number, payload: { error: string }) {
-  response.statusCode = statusCode
-  response.setHeader('Content-Type', 'application/json')
-  response.end(JSON.stringify(payload))
-}
-
-function writeSseEvent(response: ResponseLike, event: string, data: string) {
-  response.write(`event: ${event}\n`)
-  response.write(`data: ${JSON.stringify(data)}\n\n`)
-}
-
-async function readJsonBody(request: RequestLike) {
-  if (typeof request.body === 'object' && request.body !== null) {
-    return request.body
-  }
-
-  let rawBody = ''
-  for await (const chunk of request) {
-    rawBody += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
-  }
-
-  return rawBody ? (JSON.parse(rawBody) as unknown) : {}
-}
-
-function isPilotAnalysisRequest(value: unknown): value is PilotAnalysisRequest {
-  if (!value || typeof value !== 'object') {
-    return false
-  }
-
-  const candidate = value as {
-    report?: { rawMetar?: unknown; station?: { icao?: unknown } }
-  }
-  return (
-    typeof candidate.report?.rawMetar === 'string' &&
-    typeof candidate.report?.station?.icao === 'string'
-  )
-}
-
-function resolveEnvValue(key: string) {
-  if (process.env[key]) {
-    return process.env[key]
-  }
-
-  if (envCache === null) {
-    envCache = {
-      ...readEnvFile(FALLBACK_ENV_PATH),
-      ...readEnvFile(resolve(process.cwd(), '.env.local')),
-    }
-  }
-
-  return envCache[key]
-}
-
-function readEnvFile(path: string) {
-  if (!existsSync(path)) {
-    return {}
-  }
-
-  const content = readFileSync(path, 'utf8')
-  const values: EnvCache = {}
-
-  for (const line of content.split('\n')) {
-    const trimmed = line.trim()
-
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue
-    }
-
-    const separatorIndex = trimmed.indexOf('=')
-    if (separatorIndex === -1) {
-      continue
-    }
-
-    const key = trimmed.slice(0, separatorIndex)
-    const value = trimmed.slice(separatorIndex + 1).replace(/^['"]|['"]$/g, '')
-    values[key] = value
-  }
-
-  return values
 }

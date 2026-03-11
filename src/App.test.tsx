@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -15,7 +15,7 @@ type TestDecodedPayload = {
   verticalVisibility: { feet?: number | null; text: string }
   visibility: { miles?: number | null; text: string }
   weather: { text: string }
-  wind: { gustKt?: number | null; speedKt?: number | null; text: string }
+  wind: { directionDegrees?: number | 'VRB' | null; gustKt?: number | null; speedKt?: number | null; text: string }
 }
 
 type TestMetarPayload = {
@@ -61,14 +61,14 @@ describe('App', () => {
 
     expect(screen.getAllByText('MetarX').length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'MetarX' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'MetarD' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'MetarZ' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByText('Start with any ICAO code')).toBeInTheDocument()
   })
 
   it('switches personas, updates copy, and persists the selection', async () => {
     const { unmount } = render(<App />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'MetarD' }))
+    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
 
     expect(screen.getByText('Questionable Pilot Briefing For Dumbasses')).toBeInTheDocument()
     expect(screen.getByText('Type an ICAO code, jackass')).toBeInTheDocument()
@@ -78,7 +78,7 @@ describe('App', () => {
     unmount()
     render(<App />)
 
-    expect(screen.getByRole('button', { name: 'MetarD' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'MetarZ' })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText('Questionable Pilot Briefing For Dumbasses')).toBeInTheDocument()
   })
 
@@ -91,6 +91,7 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
 
     await screen.findByText('New York/JF Kennedy Intl, NY, US')
+    expect(screen.getByText(/Mar 5, 2026, 5:00 PM EST/)).toBeInTheDocument()
     expect(screen.getByText('Overcast at 600 ft')).toBeInTheDocument()
     expect(screen.getByText('Light drizzle, Mist')).toBeInTheDocument()
     expect(screen.getAllByText('Not reported')).toHaveLength(2)
@@ -104,6 +105,9 @@ describe('App', () => {
       .toBeInTheDocument()
     expect(within(analysisSection).getByRole('button', { name: /pilot perspective/i }))
       .toBeInTheDocument()
+    expect(
+      within(analysisSection).queryByRole('button', { name: /collapse pilot perspective/i }),
+    ).not.toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /pilot perspective/i })).toHaveLength(1)
   })
 
@@ -128,12 +132,15 @@ describe('App', () => {
 
     await userEvent.click(within(analysisSection).getByRole('button', { name: /pilot perspective/i }))
 
-    expect(screen.getByText('Conditions Summary')).toBeInTheDocument()
+    expect(await screen.findByText(/Conditions Summary/)).toBeInTheDocument()
     expect(
-      screen.getByText('Low ceilings and reduced visibility increase workload.'),
+      await screen.findByText(/Low ceilings and reduced visibility increase workload/),
     ).toBeInTheDocument()
     expect(
-      screen.getByText('Expect higher workload on departure or arrival.'),
+      await screen.findByText(/Expect higher workload on departure or arrival/),
+    ).toBeInTheDocument()
+    expect(
+      within(analysisSection).getByRole('button', { name: /collapse pilot perspective/i }),
     ).toBeInTheDocument()
     expect(within(analysisSection).getByRole('button', { name: /refresh perspective/i }))
       .toBeInTheDocument()
@@ -190,6 +197,28 @@ describe('App', () => {
     expect(within(analysisSection).queryByText('Pilot analysis failed.')).not.toBeInTheDocument()
   })
 
+  it('renders streamed analysis errors and handles unterminated event buffers', async () => {
+    vi.spyOn(window, 'fetch')
+      .mockResolvedValueOnce(createJsonResponse(createMetarPayload()))
+      .mockResolvedValueOnce(createStreamingResponse([
+        'event: token\ndata: "## Conditions Summary\\nPartial token"',
+        '\n\nevent: error\ndata: ""',
+      ]))
+
+    render(<App />)
+
+    await userEvent.type(screen.getByLabelText('ICAO airport code'), 'kjfk')
+    await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
+    await screen.findByText('New York/JF Kennedy Intl, NY, US')
+
+    const analysisSection = screen.getByRole('region', { name: 'Pilot perspective' })
+    mockElementRect(analysisSection, { top: 120, bottom: 420, height: 300 })
+
+    await userEvent.click(within(analysisSection).getByRole('button', { name: /pilot perspective/i }))
+
+    await screen.findByText('Pilot analysis failed.')
+  })
+
   it('shows an error message when the lookup fails', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue({
       ok: false,
@@ -239,7 +268,39 @@ describe('App', () => {
     expect(screen.queryByText('OVX at 300 ft')).not.toBeInTheDocument()
   })
 
-  it('renders deterministic watchouts and a recent trend strip after lookup', async () => {
+  it('collapses and re-expands report sections', async () => {
+    vi.spyOn(window, 'fetch').mockResolvedValue(createJsonResponse(createMetarPayload()))
+
+    render(<App />)
+
+    await userEvent.type(screen.getByLabelText('ICAO airport code'), 'kjfk')
+    await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
+
+    const remarksHeading = await screen.findByText('Decoded remarks')
+    const remarksSection = remarksHeading.closest('section')
+
+    expect(remarksSection).not.toBeNull()
+    expect(screen.getByText('automated station with precipitation discriminator')).toBeInTheDocument()
+
+    await userEvent.click(
+      within(remarksSection as HTMLElement).getByRole('button', { name: /collapse operational notes/i }),
+    )
+
+    await waitFor(() => {
+      expect(screen.queryByText('automated station with precipitation discriminator')).not.toBeInTheDocument()
+    })
+    expect(
+      within(remarksSection as HTMLElement).getByRole('button', { name: /expand operational notes/i }),
+    ).toBeInTheDocument()
+
+    await userEvent.click(
+      within(remarksSection as HTMLElement).getByRole('button', { name: /expand operational notes/i }),
+    )
+
+    expect(screen.getByText('automated station with precipitation discriminator')).toBeInTheDocument()
+  })
+
+  it('renders the expanded recent trend strip after lookup', async () => {
     vi.spyOn(window, 'fetch').mockResolvedValue(
       createJsonResponse(
         createMetarPayload({
@@ -255,12 +316,21 @@ describe('App', () => {
                 visibility: { text: '4 statute miles', miles: 4 },
                 cloudsText: 'Broken at 1,800 ft',
                 clouds: [{ baseFtAgl: 1800, coverCode: 'BKN', coverLabel: 'Broken', text: 'Broken at 1,800 ft' }],
-                wind: { text: '040° at 8 kt', speedKt: 8, gustKt: null },
+                wind: { text: '040° at 8 kt', directionDegrees: 40, speedKt: 8, gustKt: null },
                 altimeter: { hpa: 1022.1, inHg: 30.18, text: '1022.1 hPa / 30.18 inHg' },
               },
             }),
             createBaseMetarPayload({
               observedAt: '2026-03-05T21:00:00.000Z',
+              decoded: {
+                wind: { text: '090° at 12 kt gusting 18 kt', directionDegrees: 90, speedKt: 12, gustKt: 18 },
+              },
+            }),
+            createBaseMetarPayload({
+              observedAt: '2026-03-05T22:00:00.000Z',
+              decoded: {
+                wind: { text: '180° at 18 kt gusting 28 kt', directionDegrees: 180, speedKt: 18, gustKt: 28 },
+              },
             }),
           ],
         }),
@@ -273,10 +343,13 @@ describe('App', () => {
     await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
 
     await screen.findByText('Trend strip')
-    expect(screen.getByText('Why this matters')).toBeInTheDocument()
-    expect(screen.getByText('Visibility is reduced')).toBeInTheDocument()
-    expect(screen.getByText('Low-level obscuration is in play')).toBeInTheDocument()
+    expect(screen.getByText(/Trend summary:/i)).toBeInTheDocument()
+    expect(screen.getByText(/wind veering from 040° to 180°, speed building, gusts building to 28 kt/i)).toBeInTheDocument()
     expect(screen.getByRole('list', { name: 'Trend strip' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Visibility trend graph' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: 'Ceiling trend graph' })).toBeInTheDocument()
+    expect(screen.getByText('180° 18 kt G28')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'Wind trend graph' })).not.toBeInTheDocument()
   })
 
   it('compares two airports side by side', async () => {
@@ -324,6 +397,42 @@ describe('App', () => {
     expect(screen.queryByRole('region', { name: 'Pilot perspective' })).not.toBeInTheDocument()
   })
 
+  it('fills the compare field from recent searches when that input is focused', async () => {
+    window.localStorage.setItem('metarx:recent-searches', JSON.stringify(['KAUS', 'KJFK']))
+
+    render(<App />)
+
+    await userEvent.click(screen.getByRole('button', { name: /compare airports/i }))
+
+    const primaryInput = screen.getByLabelText('ICAO airport code')
+    const compareInput = screen.getByLabelText('Compare against another ICAO airport')
+
+    await userEvent.type(primaryInput, 'kjfk')
+    await userEvent.click(compareInput)
+    await userEvent.click(screen.getByRole('button', { name: 'KAUS' }))
+
+    expect(primaryInput).toHaveValue('KJFK')
+    expect(compareInput).toHaveValue('KAUS')
+  })
+
+  it('does not allow selecting the same airport into both compare fields from saved chips', async () => {
+    window.localStorage.setItem('metarx:recent-searches', JSON.stringify(['KJFK']))
+
+    render(<App />)
+
+    await userEvent.click(screen.getByRole('button', { name: /compare airports/i }))
+
+    const primaryInput = screen.getByLabelText('ICAO airport code')
+    const compareInput = screen.getByLabelText('Compare against another ICAO airport')
+
+    await userEvent.type(primaryInput, 'kjfk')
+    await userEvent.click(compareInput)
+    await userEvent.click(screen.getByRole('button', { name: 'KJFK' }))
+
+    expect(primaryInput).toHaveValue('KJFK')
+    expect(compareInput).toHaveValue('')
+  })
+
   it('uses the metard persona for copy and pilot-analysis requests without clearing results', async () => {
     const fetchMock = vi
       .spyOn(window, 'fetch')
@@ -335,7 +444,7 @@ describe('App', () => {
 
     render(<App />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'MetarD' }))
+    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
     await userEvent.type(screen.getByLabelText('ICAO airport code'), 'kjfk')
     await userEvent.click(screen.getByRole('button', { name: /commit weather crimes/i }))
     await screen.findByText('New York/JF Kennedy Intl, NY, US')
@@ -374,7 +483,7 @@ describe('App', () => {
 
     render(<App />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'MetarD' }))
+    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
     await userEvent.type(screen.getByLabelText('ICAO airport code'), 'kjfk')
     await userEvent.click(screen.getByRole('button', { name: /commit weather crimes/i }))
     await screen.findByText('New York/JF Kennedy Intl, NY, US')
@@ -397,7 +506,7 @@ describe('App', () => {
 
     await screen.findByText('Professional weather brief.')
 
-    await userEvent.click(screen.getByRole('button', { name: 'MetarD' }))
+    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
 
     analysisSection = screen.getByRole('region', { name: 'Idiot advisory desk' })
     expect(screen.getByText('Goblin weather rant.')).toBeInTheDocument()
@@ -432,6 +541,48 @@ describe('App', () => {
     expect(screen.queryByText('New York/JF Kennedy Intl, NY, US')).not.toBeInTheDocument()
     expect(screen.getByText('No report found.')).toBeInTheDocument()
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the latest lookup result when an older request resolves afterward', async () => {
+    const firstLookup = createDeferredResponse()
+    const secondLookup = createDeferredResponse()
+
+    vi.spyOn(window, 'fetch')
+      .mockImplementationOnce(() => firstLookup.promise)
+      .mockImplementationOnce(() => secondLookup.promise)
+
+    render(<App />)
+
+    const input = screen.getByLabelText('ICAO airport code')
+    await userEvent.type(input, 'kjfk')
+    await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
+
+    await userEvent.clear(input)
+    await userEvent.type(input, 'kaus')
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    secondLookup.resolve(
+      createJsonResponse(
+        createMetarPayload({
+          station: {
+            icao: 'KAUS',
+            lat: 30.1831,
+            lon: -97.6806,
+            name: 'Austin/Bergstrom Intl, TX, US',
+          },
+          rawMetar: 'METAR KAUS 052151Z 02011KT 10SM SCT025 BKN040 18/11 A3008 RMK AO2',
+        }),
+      ),
+    )
+
+    await screen.findByText('Austin/Bergstrom Intl, TX, US')
+
+    firstLookup.resolve(createJsonResponse(createMetarPayload()))
+
+    await waitFor(() => {
+      expect(screen.queryByText('New York/JF Kennedy Intl, NY, US')).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('Austin/Bergstrom Intl, TX, US')).toBeInTheDocument()
   })
 
   it('cycles theme mode when the theme button is pressed', async () => {
@@ -476,6 +627,17 @@ function createJsonResponse(payload: unknown, ok = true) {
   } as Response
 }
 
+function createDeferredResponse() {
+  let resolve!: (value: Response) => void
+
+  return {
+    promise: new Promise<Response>((nextResolve) => {
+      resolve = nextResolve
+    }),
+    resolve,
+  }
+}
+
 function createMetarPayload(
   overrides: TestMetarOverrides = {},
 ) {
@@ -500,7 +662,7 @@ function createBaseMetarPayload(
   overrides: TestMetarOverrides = {},
 ) {
   const baseDecoded: TestDecodedPayload = {
-    wind: { text: '060° at 9 kt', speedKt: 9, gustKt: null },
+    wind: { text: '060° at 9 kt', directionDegrees: 60, speedKt: 9, gustKt: null },
     visibility: { text: '2 statute miles', miles: 2 },
     runwayVisualRange: { text: 'Not reported' },
     verticalVisibility: { text: 'Not reported', feet: null },

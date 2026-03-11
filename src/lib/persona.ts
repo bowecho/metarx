@@ -1,11 +1,8 @@
+import { getBrowserStorage, saveStoredValue } from './browserStorage'
+
 export type PersonaMode = 'metarx' | 'metard'
 
 export const PERSONA_STORAGE_KEY = 'metarx:persona-mode'
-
-type StorageLike = {
-  getItem: (key: string) => string | null
-  setItem: (key: string, value: string) => void
-}
 
 export type PersonaCopy = {
   analysisEmpty: string
@@ -52,9 +49,6 @@ export type PersonaCopy = {
   searchIdleButton: string
   searchLoadingButton: string
   subtitle: string
-  watchoutsEmpty: string
-  watchoutsKicker: string
-  watchoutsTitle: string
   metricLabels: {
     altimeter: string
     clouds: string
@@ -84,7 +78,7 @@ export const PERSONA_COPY: Record<PersonaMode, PersonaCopy> = {
     analysisRetryButton: 'Try Roasting Me Again',
     analysisStreamingLabel: 'Fermenting',
     analysisStreamingNote: 'A deranged cockpit ass-chewing is bubbling into existence.',
-    brand: 'MetarD',
+    brand: 'MetarZ',
     compareInputLabel: 'Second airport for extra stupidity',
     compareKicker: 'Fight card',
     compareTitle: 'Airport cage match',
@@ -120,9 +114,6 @@ export const PERSONA_COPY: Record<PersonaMode, PersonaCopy> = {
     searchIdleButton: 'Commit Weather Crimes',
     searchLoadingButton: 'Doing dumb shit',
     subtitle: 'Questionable Pilot Briefing For Dumbasses',
-    watchoutsEmpty: 'Nothing especially explosive in this report. Try not to ruin that.',
-    watchoutsKicker: 'Hazard goblin',
-    watchoutsTitle: 'Stuff most likely to bite your ass',
     metricLabels: {
       altimeter: 'Pressure Nonsense',
       clouds: 'Cloud Crap',
@@ -185,9 +176,6 @@ export const PERSONA_COPY: Record<PersonaMode, PersonaCopy> = {
     searchIdleButton: 'Decode METAR',
     searchLoadingButton: 'Loading',
     subtitle: 'Pilot Weather Briefing',
-    watchoutsEmpty: 'No standout watchouts from this METAR snapshot.',
-    watchoutsKicker: 'Deterministic watchouts',
-    watchoutsTitle: 'Why this matters',
     metricLabels: {
       altimeter: 'Altimeter',
       clouds: 'Clouds',
@@ -225,18 +213,9 @@ export function loadStoredPersonaMode(): PersonaMode {
 }
 
 export function savePersonaMode(mode: PersonaMode) {
-  const storage = getLocalStorage()
-  if (!storage) {
-    return
-  }
-
-  storage.setItem(PERSONA_STORAGE_KEY, mode)
+  saveStoredValue(PERSONA_STORAGE_KEY, mode)
 }
 
-function getLocalStorage(): StorageLike | null {
-  const candidate = globalThis as typeof globalThis & {
-    localStorage?: StorageLike
-  }
-
-  return candidate.localStorage ?? null
+function getLocalStorage() {
+  return getBrowserStorage()
 }
