@@ -1,7 +1,7 @@
 import { lazy, Suspense, type RefObject } from 'react'
 import { motion } from 'framer-motion'
 import { LoaderCircle, RefreshCw, Sparkles } from 'lucide-react'
-import type { PersonaCopy } from '../lib/persona'
+import type { AppCopy } from '../lib/copy'
 import type { AnalysisEntry } from '../hooks/usePilotAnalysis'
 import { CollapsibleSection } from './briefings'
 
@@ -16,7 +16,7 @@ function renderMarkdownFallback(markdown: string) {
 type AnalysisPanelProps = {
   activeAnalysis: AnalysisEntry
   analysisSectionRef: RefObject<HTMLElement | null>
-  copy: PersonaCopy
+  copy: AppCopy
   onRequest: () => void
 }
 

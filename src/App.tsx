@@ -21,12 +21,7 @@ import {
 import { useMetarLookup } from './hooks/useMetarLookup'
 import { usePilotAnalysis } from './hooks/usePilotAnalysis'
 import { normalizeAirportCode } from './lib/metar'
-import {
-  loadStoredPersonaMode,
-  PERSONA_COPY,
-  savePersonaMode,
-  type PersonaMode,
-} from './lib/persona'
+import { APP_COPY } from './lib/copy'
 import {
   type ThemeMode,
   loadStoredThemeMode,
@@ -36,7 +31,6 @@ import {
 
 function App() {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadStoredThemeMode())
-  const [personaMode, setPersonaMode] = useState<PersonaMode>(() => loadStoredPersonaMode())
   const [prefersDark, setPrefersDark] = useState(false)
 
   const {
@@ -68,7 +62,7 @@ function App() {
     analysisSectionRef,
     requestPilotAnalysis,
     resetAnalysis,
-  } = usePilotAnalysis(personaMode, result)
+  } = usePilotAnalysis(result)
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -90,14 +84,9 @@ function App() {
     saveThemeMode(themeMode)
   }, [prefersDark, themeMode])
 
-  useEffect(() => {
-    document.documentElement.dataset.persona = personaMode
-    savePersonaMode(personaMode)
-  }, [personaMode])
-
   const activeTheme = resolveTheme(themeMode, prefersDark)
   const themeLabel = themeMode === 'system' ? `${activeTheme} (auto)` : activeTheme
-  const copy = PERSONA_COPY[personaMode]
+  const copy = APP_COPY
 
   const onThemeChange = () => {
     setThemeMode((current) => {
@@ -126,10 +115,6 @@ function App() {
     void requestPilotAnalysis()
   }
 
-  const onPersonaChange = (mode: PersonaMode) => {
-    setPersonaMode(mode)
-  }
-
   return (
     <div className="app-shell">
       <div className="ambient-orb ambient-orb--primary" />
@@ -153,19 +138,6 @@ function App() {
             <span className="top-bar-subtitle">{copy.subtitle}</span>
             <div className="top-bar-spacer" />
             <div className="top-bar-controls">
-              <div aria-label="Persona mode" className="persona-switcher" role="group">
-                {(['metarx', 'metard'] as const).map((mode) => (
-                  <button
-                    aria-pressed={personaMode === mode}
-                    className="persona-option"
-                    key={mode}
-                    type="button"
-                    onClick={() => onPersonaChange(mode)}
-                  >
-                    {PERSONA_COPY[mode].brand}
-                  </button>
-                ))}
-              </div>
               <button
                 aria-label={`Theme mode: ${themeLabel}`}
                 className="theme-button"

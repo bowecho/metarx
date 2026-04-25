@@ -1,54 +1,37 @@
 import type { MetarReport } from './metar'
-import { type PersonaMode, resolvePersonaMode } from './persona'
 
-export const PILOT_ANALYSIS_MODEL = 'google/gemini-3-flash-preview'
-export const PILOT_ANALYSIS_TEMPERATURE_METARX = 0.4
-export const PILOT_ANALYSIS_TEMPERATURE_METARD = 0.8
+export const PILOT_ANALYSIS_MODEL = 'deepseek/deepseek-v3.2'
+export const PILOT_ANALYSIS_TEMPERATURE = 0.4
 
 export const PILOT_ANALYSIS_SYSTEM_PROMPT = `You are a calm, experienced flight instructor giving practical weather perspective to a pilot.
 
 The audience is a pilot, not the general public.
 Base your analysis only on the supplied METAR and decoded fields.
-Do not invent runway, approach, aircraft, fuel, alternate, icing aloft, convective, legal, or pilot-currency details that are not provided.
+Do not invent runway identifiers, runway configurations, traffic flow, approach types, aircraft type, fuel, alternate, icing aloft, convective details, legal conclusions, or pilot-currency details that are not provided.
+Do not claim a specific runway, approach, or traffic configuration unless it is explicitly stated in the supplied data.
+Do not restate or reinterpret wind direction incorrectly. Keep headings, speeds, gusts, visibility, ceilings, temperatures, dew point, pressure, and weather exactly aligned with the supplied values.
+If you infer an operational implication such as gusty workload, density-altitude impact, or possible turbulence, label it as an inference rather than an observed fact.
 Do not issue a direct go/no-go order.
 Instead, explain operational cautions, likely implications, and what additional context would matter.
 If something is uncertain because the METAR is limited, say that clearly.
+Prefer the dominant operational risk over generic filler. If the weather is straightforward, say that plainly.
+Avoid filler about forecasts, radar, TAFs, or trends unless you are explicitly framing them as missing context the pilot should still check.
+Write short paragraphs, not bullet lists.
 
 Respond in compact Markdown using exactly these sections:
 ## Conditions Summary
 ## Pilot Considerations
 ## Key Cautions
 
-Keep the overall response concise, usually 150 to 250 words.`
-
-export const PILOT_ANALYSIS_METARD_SYSTEM_PROMPT = `You are a chaotic, theatrical veteran pilot delivering a ridiculous but still useful weather debrief.
-
-The audience is still a pilot.
-Base your analysis only on the supplied METAR and decoded fields.
-Do not invent runway, approach, aircraft, fuel, alternate, icing aloft, convective, legal, or pilot-currency details that are not provided.
-Do not change, distort, exaggerate, or joke about the factual weather values themselves.
-Do not issue a direct go/no-go order.
-Use absurd, over-the-top phrasing, foul language, and comedic metaphors while aggressively roasting the pilot's dumb decision-making.
-Profanity is required in the response. Use blunt words like "damn", "hell", "shit", "bullshit", or "ass" naturally in the prose.
-Include at least one profane or sharply insulting phrase in each section.
-Each section must contain at least one sentence with explicit profanity. If a section is clean, the response failed the assignment.
-The tone can be rude, sarcastic, mocking, and insulting in a playful way, but keep the operational substance real and recognizable.
-If something is uncertain because the METAR is limited, say that clearly.
-Do not use slurs, hate content, or insults aimed at protected classes.
-
-Respond in compact Markdown using exactly these sections:
-## Conditions Summary
-## Pilot Considerations
-## Key Cautions
-
-Keep the overall response concise, usually 150 to 250 words.`
+Each heading must appear exactly once, in that order.
+Keep the overall response concise, usually 130 to 220 words.
+Finish cleanly with a complete final sentence in the Key Cautions section.`
 
 export type PilotAnalysisRequest = {
-  personaMode: PersonaMode
   report: MetarReport
 }
 
-export function buildPilotAnalysisPrompt(report: MetarReport, personaMode: PersonaMode = 'metarx') {
+export function buildPilotAnalysisPrompt(report: MetarReport) {
   const promptLines = [
     `Station: ${report.station.icao} (${report.station.name})`,
     `Observed at: ${report.observedAt}`,
@@ -65,30 +48,21 @@ export function buildPilotAnalysisPrompt(report: MetarReport, personaMode: Perso
     '',
     'Give a practical pilot-focused interpretation of these conditions.',
     'Emphasize safety considerations, workload, and what deserves extra attention.',
+    'Use only the supplied METAR and decoded fields as facts.',
+    'If you mention runway suitability, approach implications, turbulence, density altitude, or trend risk, present that as an inference and not as an observed fact.',
+    'Do not mention a specific runway number, approach type, traffic flow, fuel plan, alternate, or legal conclusion unless it appears in the supplied data.',
+    'Do not use bullet lists. Write three short paragraphs under the required headings.',
+    'Keep the response concise and complete. Do not leave the final section unfinished.',
+    'Speak like a senior pilot or instructor debriefing another pilot.',
   ]
-
-  if (resolvePersonaMode(personaMode) === 'metard') {
-    promptLines.push(
-      'Use chaotic, theatrical humor, foul language, and direct insults aimed at the pilot making dumb choices.',
-      'Use profanity plainly and repeatedly, not just once.',
-      'Every section must include at least one sentence with explicit profanity such as "damn", "shit", "hell", "bullshit", or "ass".',
-      'Keep every factual weather detail exact and operationally useful.',
-    )
-  } else {
-    promptLines.push('Speak like a senior pilot or instructor debriefing another pilot.')
-  }
 
   return promptLines.join('\n')
 }
 
-export function getPilotAnalysisSystemPrompt(personaMode: PersonaMode = 'metarx') {
-  return resolvePersonaMode(personaMode) === 'metard'
-    ? PILOT_ANALYSIS_METARD_SYSTEM_PROMPT
-    : PILOT_ANALYSIS_SYSTEM_PROMPT
+export function getPilotAnalysisSystemPrompt() {
+  return PILOT_ANALYSIS_SYSTEM_PROMPT
 }
 
-export function getPilotAnalysisTemperature(personaMode: PersonaMode = 'metarx') {
-  return resolvePersonaMode(personaMode) === 'metard'
-    ? PILOT_ANALYSIS_TEMPERATURE_METARD
-    : PILOT_ANALYSIS_TEMPERATURE_METARX
+export function getPilotAnalysisTemperature() {
+  return PILOT_ANALYSIS_TEMPERATURE
 }

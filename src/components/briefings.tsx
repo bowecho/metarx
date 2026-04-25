@@ -7,7 +7,7 @@ import {
   type MetarReport,
   summarizeFlightCategory,
 } from '../lib/metar'
-import type { PersonaCopy } from '../lib/persona'
+import type { AppCopy } from '../lib/copy'
 import {
   formatTrendDelta,
   formatTrendValue,
@@ -42,7 +42,7 @@ type HistoryCardProps = {
 
 type AirportBriefingProps = {
   children?: ReactNode
-  copy: PersonaCopy
+  copy: AppCopy
   history: MetarReport[]
   isFavorite: boolean
   onToggleFavorite: () => void
@@ -50,7 +50,7 @@ type AirportBriefingProps = {
 }
 
 type CompareAirportBriefingsProps = {
-  copy: PersonaCopy
+  copy: AppCopy
   leftHistory: MetarReport[]
   leftIsFavorite: boolean
   leftReport: MetarReport
@@ -62,7 +62,7 @@ type CompareAirportBriefingsProps = {
 }
 
 type AirportSummaryProps = {
-  copy: PersonaCopy
+  copy: AppCopy
   isFavorite: boolean
   onToggleFavorite: () => void
   report: MetarReport
@@ -77,7 +77,7 @@ type CompareReportSectionProps = {
 }
 
 type TrendStripCardProps = {
-  copy: PersonaCopy
+  copy: AppCopy
   history: MetarReport[]
   report: MetarReport
 }
@@ -571,7 +571,7 @@ function TrendMiniChart({ label, unitLabel, values }: TrendMiniChartProps) {
   )
 }
 
-function getAtmosphereMetrics(copy: PersonaCopy, report: MetarReport): ReportMetric[] {
+function getAtmosphereMetrics(copy: AppCopy, report: MetarReport): ReportMetric[] {
   return [
     { label: copy.metricLabels.flightRules, value: summarizeFlightCategory(report.flightCategory ?? null) },
     { label: copy.metricLabels.wind, value: report.decoded.wind.text },
@@ -582,7 +582,7 @@ function getAtmosphereMetrics(copy: PersonaCopy, report: MetarReport): ReportMet
   ]
 }
 
-function getThermalMetrics(copy: PersonaCopy, report: MetarReport): ReportMetric[] {
+function getThermalMetrics(copy: AppCopy, report: MetarReport): ReportMetric[] {
   return [
     { label: copy.metricLabels.temperature, value: report.decoded.temperature.text },
     { label: copy.metricLabels.dewPoint, value: report.decoded.dewPoint.text },

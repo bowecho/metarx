@@ -147,6 +147,49 @@ describe('handleMetarRequest', () => {
     })
     expect(fetchSpy).toHaveBeenCalledOnce()
   })
+
+  it('passes an abort signal to the NOAA fetch', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [
+        {
+          icaoId: 'KJFK',
+          rawOb: 'METAR KJFK 052151Z 06009KT 2SM -DZ BR OVC006 06/05 A3022 RMK AO2',
+          reportTime: '2026-03-05T22:00:00.000Z',
+          fltCat: 'IFR',
+          temp: 5.6,
+          dewp: 5,
+          wdir: 60,
+          wspd: 9,
+          visib: 2,
+          altim: 1023.5,
+          wxString: '-DZ BR',
+          lat: 40.6392,
+          lon: -73.7639,
+          name: 'New York/JF Kennedy Intl, NY, US',
+          clouds: [{ cover: 'OVC', base: 600 }],
+        },
+      ],
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const response = createJsonResponseRecorder()
+    await handleMetarRequest(
+      {
+        method: 'GET',
+        url: 'https://metarx.local/api/metar?code=KJFK',
+      },
+      response,
+    )
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('aviationweather.gov/api/data/metar'),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    )
+  })
 })
 
 function createJsonResponseRecorder() {

@@ -3,11 +3,9 @@ import {
   buildPilotAnalysisPrompt,
   getPilotAnalysisTemperature,
   getPilotAnalysisSystemPrompt,
-  PILOT_ANALYSIS_METARD_SYSTEM_PROMPT,
   PILOT_ANALYSIS_MODEL,
   PILOT_ANALYSIS_SYSTEM_PROMPT,
-  PILOT_ANALYSIS_TEMPERATURE_METARD,
-  PILOT_ANALYSIS_TEMPERATURE_METARX,
+  PILOT_ANALYSIS_TEMPERATURE,
 } from './pilotAnalysis'
 import type { MetarReport } from './metar'
 
@@ -44,44 +42,43 @@ const sampleReport: MetarReport = {
 
 describe('pilot analysis prompt', () => {
   it('pins the requested OpenRouter model id', () => {
-    expect(PILOT_ANALYSIS_MODEL).toBe('google/gemini-3-flash-preview')
+    expect(PILOT_ANALYSIS_MODEL).toBe('deepseek/deepseek-v3.2')
   })
 
   it('builds a pilot-focused prompt from the current METAR report', () => {
-    const prompt = buildPilotAnalysisPrompt(sampleReport, 'metarx')
+    const prompt = buildPilotAnalysisPrompt(sampleReport)
 
     expect(prompt).toContain('Station: KJFK')
     expect(prompt).toContain('Raw METAR: METAR KJFK')
     expect(prompt).toContain('Flight category: IFR')
     expect(prompt).toContain('Remarks: automated station with precipitation discriminator')
     expect(prompt).toContain('senior pilot or instructor')
+    expect(prompt).toContain('Use only the supplied METAR and decoded fields as facts.')
+    expect(prompt).toContain('Do not mention a specific runway number, approach type, traffic flow, fuel plan, alternate, or legal conclusion')
+    expect(prompt).toContain('Do not use bullet lists. Write three short paragraphs under the required headings.')
+    expect(prompt).toContain('Do not leave the final section unfinished.')
   })
 
-  it('builds a chaotic but still factual metard prompt variant', () => {
-    const prompt = buildPilotAnalysisPrompt(sampleReport, 'metard')
+  it('falls back to unknown when flight category is missing', () => {
+    const prompt = buildPilotAnalysisPrompt({
+      ...sampleReport,
+      flightCategory: null,
+    })
 
-    expect(prompt).toContain('foul language')
-    expect(prompt).toContain('direct insults aimed at the pilot')
-    expect(prompt).toContain('Use profanity plainly and repeatedly')
-    expect(prompt).toContain('Every section must include at least one sentence with explicit profanity')
-    expect(prompt).toContain('Keep every factual weather detail exact')
+    expect(prompt).toContain('Flight category: Unknown')
   })
 
-  it('selects persona-specific system prompts', () => {
-    expect(getPilotAnalysisSystemPrompt('metarx')).toBe(PILOT_ANALYSIS_SYSTEM_PROMPT)
-    expect(getPilotAnalysisSystemPrompt('metard')).toBe(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT)
-    expect(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT).toContain('Do not change, distort, exaggerate')
-    expect(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT).toContain('Do not use slurs')
-    expect(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT).toContain("aggressively roasting the pilot's dumb decision-making")
-    expect(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT).toContain('Profanity is required in the response')
-    expect(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT).toContain('Include at least one profane or sharply insulting phrase in each section')
-    expect(PILOT_ANALYSIS_METARD_SYSTEM_PROMPT).toContain('Each section must contain at least one sentence with explicit profanity')
+  it('returns the fixed system prompt', () => {
+    expect(getPilotAnalysisSystemPrompt()).toBe(PILOT_ANALYSIS_SYSTEM_PROMPT)
+    expect(PILOT_ANALYSIS_SYSTEM_PROMPT).toContain('Do not invent runway identifiers, runway configurations, traffic flow, approach types')
+    expect(PILOT_ANALYSIS_SYSTEM_PROMPT).toContain('If you infer an operational implication')
+    expect(PILOT_ANALYSIS_SYSTEM_PROMPT).toContain('Write short paragraphs, not bullet lists.')
+    expect(PILOT_ANALYSIS_SYSTEM_PROMPT).toContain('Each heading must appear exactly once, in that order.')
+    expect(PILOT_ANALYSIS_SYSTEM_PROMPT).toContain('Finish cleanly with a complete final sentence')
   })
 
-  it('uses a higher temperature for metard while keeping metarx stable', () => {
-    expect(getPilotAnalysisTemperature('metarx')).toBe(PILOT_ANALYSIS_TEMPERATURE_METARX)
-    expect(getPilotAnalysisTemperature('metard')).toBe(PILOT_ANALYSIS_TEMPERATURE_METARD)
-    expect(PILOT_ANALYSIS_TEMPERATURE_METARX).toBe(0.4)
-    expect(PILOT_ANALYSIS_TEMPERATURE_METARD).toBe(0.8)
+  it('uses the fixed pilot-analysis temperature', () => {
+    expect(getPilotAnalysisTemperature()).toBe(PILOT_ANALYSIS_TEMPERATURE)
+    expect(PILOT_ANALYSIS_TEMPERATURE).toBe(0.4)
   })
 })

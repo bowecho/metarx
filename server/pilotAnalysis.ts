@@ -23,9 +23,11 @@ import {
   getPilotAnalysisSystemPrompt,
   PILOT_ANALYSIS_MODEL,
 } from '../src/lib/pilotAnalysis'
-import { resolvePersonaMode } from '../src/lib/persona'
 
 export { resetPilotAnalysisRateLimit } from './pilotAnalysis/rateLimit'
+
+const PILOT_ANALYSIS_ERROR = 'Pilot analysis failed.'
+const PILOT_ANALYSIS_CONFIGURATION_ERROR = 'Pilot analysis is not configured on this deployment.'
 
 export async function handlePilotAnalysisRequest(request: RequestLike, response: ResponseLike) {
   if (request.method && request.method !== 'POST') {
@@ -58,18 +60,16 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
 
     const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) {
-      throw new Error('OpenRouter API key is not configured.')
+      sendJson(response, 503, { error: PILOT_ANALYSIS_CONFIGURATION_ERROR })
+      return
     }
 
-    const personaMode = resolvePersonaMode(
-      (payload as { personaMode?: unknown }).personaMode,
-    )
     const openrouter = createOpenRouter({ apiKey })
     const result = streamText({
       model: openrouter(PILOT_ANALYSIS_MODEL),
-      temperature: getPilotAnalysisTemperature(personaMode),
-      system: getPilotAnalysisSystemPrompt(personaMode),
-      prompt: buildPilotAnalysisPrompt(payload.report, personaMode),
+      temperature: getPilotAnalysisTemperature(),
+      system: getPilotAnalysisSystemPrompt(),
+      prompt: buildPilotAnalysisPrompt(payload.report),
     })
 
     openEventStream(response)
@@ -97,7 +97,7 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
 
     if (!response.headersSent) {
       sendJson(response, 500, {
-        error: error instanceof Error ? error.message : 'Pilot analysis failed.',
+        error: PILOT_ANALYSIS_ERROR,
       })
       return
     }
@@ -105,7 +105,7 @@ export async function handlePilotAnalysisRequest(request: RequestLike, response:
     writeSseEvent(
       response,
       'error',
-      error instanceof Error ? error.message : 'Pilot analysis failed.',
+      PILOT_ANALYSIS_ERROR,
     )
     response.end()
   }

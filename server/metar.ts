@@ -1,6 +1,5 @@
 import {
   type MetarLookupResponse,
-  mapNoaaMetarResponse,
   mapNoaaMetarResponses,
   METAR_FETCH_ERROR,
   METAR_NOT_FOUND_ERROR,
@@ -25,6 +24,7 @@ type ResponseLike = {
 }
 
 const ICAO_ERROR = 'Enter a valid 4-letter ICAO airport code.'
+const METAR_UPSTREAM_TIMEOUT_MS = 10_000
 
 export async function handleMetarRequest(request: RequestLike, response: ResponseLike) {
   response.setHeader('Cache-Control', 's-maxage=120, stale-while-revalidate=300')
@@ -59,24 +59,42 @@ export async function handleMetarRequest(request: RequestLike, response: Respons
 
 export async function lookupMetar(airportCode: string): Promise<MetarLookupResponse> {
   const normalizedCode = normalizeAirportCode(airportCode)
-  const upstreamResponse = await fetch(
-    `https://aviationweather.gov/api/data/metar?ids=${normalizedCode}&format=json&hours=24`,
-  )
+  const abortController = new AbortController()
+  const timeoutId = setTimeout(() => abortController.abort(), METAR_UPSTREAM_TIMEOUT_MS)
+  try {
+    const upstreamResponse = await fetch(
+      `https://aviationweather.gov/api/data/metar?ids=${normalizedCode}&format=json&hours=24`,
+      { signal: abortController.signal },
+    )
 
-  if (upstreamResponse.status === 204) {
-    throw new Error(METAR_NOT_FOUND_ERROR)
-  }
+    if (upstreamResponse.status === 204) {
+      throw new Error(METAR_NOT_FOUND_ERROR)
+    }
 
-  if (!upstreamResponse.ok) {
-    throw new Error(METAR_FETCH_ERROR)
-  }
+    if (!upstreamResponse.ok) {
+      throw new Error(METAR_FETCH_ERROR)
+    }
 
-  const payload = (await upstreamResponse.json()) as NoaaMetarRecord[]
-  const metar = mapNoaaMetarResponse(payload)
+    const payload = (await upstreamResponse.json()) as NoaaMetarRecord[]
+    const reports = mapNoaaMetarResponses(payload)
+    const metar = reports[0]
 
-  return {
-    ...metar,
-    history: mapNoaaMetarResponses(payload).slice(0, 12),
+    if (!metar) {
+      throw new Error(METAR_NOT_FOUND_ERROR)
+    }
+
+    return {
+      ...metar,
+      history: reports.slice(0, 12),
+    }
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error(METAR_FETCH_ERROR)
+    }
+
+    throw error
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
 

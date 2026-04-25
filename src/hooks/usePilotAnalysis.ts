@@ -4,7 +4,6 @@ import {
   shouldScrollAnalysisSectionIntoView,
 } from '../lib/appSupport'
 import type { PilotAnalysisRequest } from '../lib/pilotAnalysis'
-import type { PersonaMode } from '../lib/persona'
 import type { MetarLookupResponse } from '../lib/metar'
 
 export type AnalysisState = 'idle' | 'streaming' | 'success' | 'error'
@@ -21,17 +20,8 @@ const EMPTY_ANALYSIS_ENTRY: AnalysisEntry = {
   status: 'idle',
 }
 
-function createEmptyAnalysisState(): Record<PersonaMode, AnalysisEntry> {
-  return {
-    metard: { ...EMPTY_ANALYSIS_ENTRY },
-    metarx: { ...EMPTY_ANALYSIS_ENTRY },
-  }
-}
-
-export function usePilotAnalysis(personaMode: PersonaMode, result: MetarLookupResponse | null) {
-  const [analysisByPersona, setAnalysisByPersona] = useState<Record<PersonaMode, AnalysisEntry>>(
-    () => createEmptyAnalysisState(),
-  )
+export function usePilotAnalysis(result: MetarLookupResponse | null) {
+  const [activeAnalysis, setActiveAnalysis] = useState<AnalysisEntry>(EMPTY_ANALYSIS_ENTRY)
   const analysisAbortRef = useRef<AbortController | null>(null)
   const analysisSectionRef = useRef<HTMLElement | null>(null)
 
@@ -41,35 +31,24 @@ export function usePilotAnalysis(personaMode: PersonaMode, result: MetarLookupRe
     }
   }, [])
 
-  const activeAnalysis = analysisByPersona[personaMode]
-
-  const setAnalysisStateForPersona = (
-    mode: PersonaMode,
-    nextEntry: Partial<AnalysisEntry>,
-  ) => {
-    setAnalysisByPersona((current) => ({
+  const setAnalysisState = (nextEntry: Partial<AnalysisEntry>) => {
+    setActiveAnalysis((current) => ({
       ...current,
-      [mode]: {
-        ...current[mode],
-        ...nextEntry,
-      },
+      ...nextEntry,
     }))
   }
 
-  const appendAnalysisMarkdown = (mode: PersonaMode, token: string) => {
-    setAnalysisByPersona((current) => ({
+  const appendAnalysisMarkdown = (token: string) => {
+    setActiveAnalysis((current) => ({
       ...current,
-      [mode]: {
-        ...current[mode],
-        markdown: current[mode].markdown + token,
-      },
+      markdown: current.markdown + token,
     }))
   }
 
   const resetAnalysis = () => {
     analysisAbortRef.current?.abort()
     analysisAbortRef.current = null
-    setAnalysisByPersona(createEmptyAnalysisState())
+    setActiveAnalysis({ ...EMPTY_ANALYSIS_ENTRY })
   }
 
   const requestPilotAnalysis = async () => {
@@ -85,15 +64,14 @@ export function usePilotAnalysis(personaMode: PersonaMode, result: MetarLookupRe
     analysisAbortRef.current?.abort()
     const abortController = new AbortController()
     analysisAbortRef.current = abortController
-    const requestPersonaMode = personaMode
-    setAnalysisStateForPersona(requestPersonaMode, {
+    setAnalysisState({
       error: '',
       markdown: '',
       status: 'streaming',
     })
 
     try {
-      const payload: PilotAnalysisRequest = { report: result, personaMode: requestPersonaMode }
+      const payload: PilotAnalysisRequest = { report: result }
       const response = await fetch('/api/pilot-analysis', {
         method: 'POST',
         headers: {
@@ -116,24 +94,24 @@ export function usePilotAnalysis(personaMode: PersonaMode, result: MetarLookupRe
 
       await consumeEventStream(response.body, {
         onDone: () => {
-          setAnalysisStateForPersona(requestPersonaMode, {
+          setAnalysisState({
             status: 'success',
           })
         },
         onError: (message) => {
           hasStreamError = true
-          setAnalysisStateForPersona(requestPersonaMode, {
+          setAnalysisState({
             error: message,
             status: 'error',
           })
         },
         onToken: (token) => {
-          appendAnalysisMarkdown(requestPersonaMode, token)
+          appendAnalysisMarkdown(token)
         },
       })
 
       if (!hasStreamError) {
-        setAnalysisStateForPersona(requestPersonaMode, {
+        setAnalysisState({
           status: 'success',
         })
       }
@@ -142,7 +120,7 @@ export function usePilotAnalysis(personaMode: PersonaMode, result: MetarLookupRe
         return
       }
 
-      setAnalysisStateForPersona(requestPersonaMode, {
+      setAnalysisState({
         error: error instanceof Error ? error.message : 'Pilot analysis failed.',
         status: 'error',
       })

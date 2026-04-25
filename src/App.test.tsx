@@ -60,26 +60,14 @@ describe('App', () => {
     render(<App />)
 
     expect(screen.getAllByText('MetarX').length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: 'MetarX' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('button', { name: 'MetarZ' })).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByText('Start with any ICAO code')).toBeInTheDocument()
   })
 
-  it('switches personas, updates copy, and persists the selection', async () => {
-    const { unmount } = render(<App />)
-
-    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
-
-    expect(screen.getByText('Questionable Pilot Briefing For Dumbasses')).toBeInTheDocument()
-    expect(screen.getByText('Type an ICAO code, jackass')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /commit weather crimes/i })).toBeInTheDocument()
-    expect(window.localStorage.getItem('metarx:persona-mode')).toBe('metard')
-
-    unmount()
+  it('does not render a persona switcher', () => {
     render(<App />)
 
-    expect(screen.getByRole('button', { name: 'MetarZ' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByText('Questionable Pilot Briefing For Dumbasses')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: /persona mode/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'MetarZ' })).not.toBeInTheDocument()
   })
 
   it('shows a decoded METAR after a successful lookup', async () => {
@@ -433,49 +421,10 @@ describe('App', () => {
     expect(compareInput).toHaveValue('')
   })
 
-  it('uses the metard persona for copy and pilot-analysis requests without clearing results', async () => {
+  it('sends only the report in pilot-analysis requests', async () => {
     const fetchMock = vi
       .spyOn(window, 'fetch')
       .mockResolvedValueOnce(createJsonResponse(createMetarPayload()))
-      .mockResolvedValueOnce(createStreamingResponse([
-        'event: token\ndata: "## Conditions Summary\\nGoblin mode engaged."\n\n',
-        'event: done\ndata: ""\n\n',
-      ]))
-
-    render(<App />)
-
-    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
-    await userEvent.type(screen.getByLabelText('ICAO airport code'), 'kjfk')
-    await userEvent.click(screen.getByRole('button', { name: /commit weather crimes/i }))
-    await screen.findByText('New York/JF Kennedy Intl, NY, US')
-
-    expect(screen.getByText('Current sky stupidity')).toBeInTheDocument()
-    expect(screen.getByText('Recent stupid ideas')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /humiliate me/i })).toBeInTheDocument()
-
-    const analysisSection = screen.getByRole('region', { name: 'Idiot advisory desk' })
-    mockElementRect(analysisSection, { top: 1200, bottom: 1600, height: 400 })
-
-    await userEvent.click(within(analysisSection).getByRole('button', { name: /humiliate me/i }))
-
-    await screen.findByText('Goblin mode engaged.')
-    expect(screen.getByText('New York/JF Kennedy Intl, NY, US')).toBeInTheDocument()
-
-    const analysisRequest = fetchMock.mock.calls[1]
-    expect(analysisRequest?.[0]).toBe('/api/pilot-analysis')
-    expect(JSON.parse(String((analysisRequest?.[1] as RequestInit).body))).toMatchObject({
-      personaMode: 'metard',
-    })
-  })
-
-  it('keeps pilot perspectives separate for metarx and metard when toggling personas', async () => {
-    const fetchMock = vi
-      .spyOn(window, 'fetch')
-      .mockResolvedValueOnce(createJsonResponse(createMetarPayload()))
-      .mockResolvedValueOnce(createStreamingResponse([
-        'event: token\ndata: "## Conditions Summary\\nGoblin weather rant."\n\n',
-        'event: done\ndata: ""\n\n',
-      ]))
       .mockResolvedValueOnce(createStreamingResponse([
         'event: token\ndata: "## Conditions Summary\\nProfessional weather brief."\n\n',
         'event: done\ndata: ""\n\n',
@@ -483,41 +432,20 @@ describe('App', () => {
 
     render(<App />)
 
-    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
     await userEvent.type(screen.getByLabelText('ICAO airport code'), 'kjfk')
-    await userEvent.click(screen.getByRole('button', { name: /commit weather crimes/i }))
+    await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
     await screen.findByText('New York/JF Kennedy Intl, NY, US')
 
-    let analysisSection = screen.getByRole('region', { name: 'Idiot advisory desk' })
-    mockElementRect(analysisSection, { top: 1200, bottom: 1600, height: 400 })
-    await userEvent.click(within(analysisSection).getByRole('button', { name: /humiliate me/i }))
-
-    await screen.findByText('Goblin weather rant.')
-
-    await userEvent.click(screen.getByRole('button', { name: 'MetarX' }))
-
-    analysisSection = screen.getByRole('region', { name: 'Pilot perspective' })
-    expect(screen.queryByText('Goblin weather rant.')).not.toBeInTheDocument()
-    expect(within(analysisSection).getByRole('button', { name: /pilot perspective/i }))
-      .toBeInTheDocument()
-
+    const analysisSection = screen.getByRole('region', { name: 'Pilot perspective' })
     mockElementRect(analysisSection, { top: 1200, bottom: 1600, height: 400 })
     await userEvent.click(within(analysisSection).getByRole('button', { name: /pilot perspective/i }))
 
     await screen.findByText('Professional weather brief.')
 
-    await userEvent.click(screen.getByRole('button', { name: 'MetarZ' }))
-
-    analysisSection = screen.getByRole('region', { name: 'Idiot advisory desk' })
-    expect(screen.getByText('Goblin weather rant.')).toBeInTheDocument()
-    expect(screen.queryByText('Professional weather brief.')).not.toBeInTheDocument()
-
-    expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toMatchObject({
-      personaMode: 'metard',
-    })
-    expect(JSON.parse(String((fetchMock.mock.calls[2][1] as RequestInit).body))).toMatchObject({
-      personaMode: 'metarx',
-    })
+    const analysisRequest = fetchMock.mock.calls[1]
+    expect(analysisRequest?.[0]).toBe('/api/pilot-analysis')
+    expect(JSON.parse(String((analysisRequest?.[1] as RequestInit).body))).not.toHaveProperty('personaMode')
+    expect(JSON.parse(String((analysisRequest?.[1] as RequestInit).body))).toHaveProperty('report')
   })
 
   it('clears the previous result when a later lookup fails', async () => {

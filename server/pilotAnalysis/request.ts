@@ -1,6 +1,12 @@
 import type { PilotAnalysisRequest } from '../../src/lib/pilotAnalysis'
 
 const MAX_REQUEST_BYTES = 64 * 1024
+const TRUSTED_FORWARDED_HOST_HEADERS = new Set([
+  'localhost:5173',
+  '127.0.0.1:5173',
+  'localhost:4173',
+  '127.0.0.1:4173',
+])
 
 export type RequestLike = AsyncIterable<Uint8Array | string> & {
   body?: unknown
@@ -48,7 +54,8 @@ export function isAllowedOrigin(request: RequestLike) {
 
 export function getClientAddress(request: RequestLike) {
   const forwardedFor = readHeader(request, 'x-forwarded-for')
-  if (forwardedFor) {
+  const forwardedHost = readHeader(request, 'x-forwarded-host')
+  if (forwardedFor && forwardedHost && isTrustedForwardedHost(forwardedHost)) {
     return forwardedFor.split(',')[0]?.trim() ?? 'unknown'
   }
 
@@ -57,6 +64,10 @@ export function getClientAddress(request: RequestLike) {
 
 export async function readJsonBody(request: RequestLike) {
   if (typeof request.body === 'object' && request.body !== null) {
+    if (Buffer.byteLength(JSON.stringify(request.body), 'utf8') > MAX_REQUEST_BYTES) {
+      throw new Error('Pilot analysis request body is too large.')
+    }
+
     return request.body
   }
 
@@ -78,6 +89,10 @@ export async function readJsonBody(request: RequestLike) {
   } catch {
     throw new Error('Pilot analysis request body must be valid JSON.')
   }
+}
+
+function isTrustedForwardedHost(value: string) {
+  return TRUSTED_FORWARDED_HOST_HEADERS.has(value)
 }
 
 export function isPilotAnalysisRequest(value: unknown): value is PilotAnalysisRequest {

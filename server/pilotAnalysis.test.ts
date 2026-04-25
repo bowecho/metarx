@@ -5,7 +5,6 @@ import {
 } from './pilotAnalysis'
 
 const validPayload = {
-  personaMode: 'metarx',
   report: {
     decoded: {
       altimeter: { hpa: 1023.8, inHg: 30.23, text: '1023.8 hPa / 30.23 inHg' },
@@ -185,8 +184,8 @@ describe('handlePilotAnalysisRequest', () => {
         response,
       )
 
-      expect(response.statusCode).toBe(500)
-      expect(response.body).toContain('OpenRouter API key is not configured.')
+      expect(response.statusCode).toBe(503)
+      expect(response.body).toContain('Pilot analysis is not configured')
     }
 
     const limitedResponse = createResponseRecorder()
@@ -204,6 +203,57 @@ describe('handlePilotAnalysisRequest', () => {
     expect(limitedResponse.body).toContain('temporarily rate limited')
   })
 
+  it('does not trust x-forwarded-for without a trusted forwarded host', async () => {
+    const firstResponse = createResponseRecorder()
+    await handlePilotAnalysisRequest(
+      createJsonRequest(validPayload, {
+        'content-type': 'application/json',
+        host: 'localhost:5173',
+        origin: 'http://localhost:5173',
+        'x-forwarded-for': '1.2.3.4',
+      }, '10.0.0.1'),
+      firstResponse,
+    )
+
+    const secondResponse = createResponseRecorder()
+    await handlePilotAnalysisRequest(
+      createJsonRequest(validPayload, {
+        'content-type': 'application/json',
+        host: 'localhost:5173',
+        origin: 'http://localhost:5173',
+        'x-forwarded-for': '9.9.9.9',
+      }, '10.0.0.1'),
+      secondResponse,
+    )
+
+    expect(firstResponse.statusCode).toBe(503)
+    expect(secondResponse.statusCode).toBe(503)
+  })
+
+  it('rejects oversized pre-parsed request bodies', async () => {
+    const response = createResponseRecorder()
+
+    await handlePilotAnalysisRequest(
+      createJsonRequest(
+        {
+          report: {
+            ...validPayload.report,
+            rawMetar: `METAR ${'X'.repeat(70_000)}`,
+          },
+        },
+        {
+          'content-type': 'application/json',
+          host: 'localhost:5173',
+          origin: 'http://localhost:5173',
+        },
+      ),
+      response,
+    )
+
+    expect(response.statusCode).toBe(413)
+    expect(response.body).toContain('too large')
+  })
+
   it('accepts forwarded host/proto headers and array-valued headers', async () => {
     const response = createResponseRecorder()
 
@@ -217,20 +267,21 @@ describe('handlePilotAnalysisRequest', () => {
       response,
     )
 
-    expect(response.statusCode).toBe(500)
-    expect(response.body).toContain('OpenRouter API key is not configured.')
+    expect(response.statusCode).toBe(503)
+    expect(response.body).toContain('Pilot analysis is not configured')
   })
 })
 
 function createJsonRequest(
   body: unknown,
   headers: Record<string, string>,
+  remoteAddress = '127.0.0.1',
 ) {
   return {
     body,
     headers,
     method: 'POST',
-    socket: { remoteAddress: '127.0.0.1' },
+    socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {},
   }
 }
