@@ -20,7 +20,6 @@ MetarX is a single-page aviation weather app for quickly looking up an airport M
 - Recent METAR trend strip using the latest NOAA reports for the selected airport, with compact visual charts for visibility, ceiling, wind, and altimeter
 - Side-by-side airport comparison mode for contrasting two current METAR briefings at once
 - Optional pilot-focused LLM analysis with streamed markdown output and an instructor-style perspective
-- Dual persona modes: professional `MetarX` and chaotic-but-safe `MetarZ`
 - Recent searches and favorites stored in local storage
 - System-aware light/dark theme with manual override
 - Responsive layout for phone, laptop, and desktop screens
@@ -42,7 +41,7 @@ Required variable:
 
 - `OPENROUTER_API_KEY`
 
-The pilot-analysis route uses the fixed OpenRouter model `google/gemini-3-flash-preview`.
+The pilot-analysis route uses the fixed OpenRouter model `deepseek/deepseek-v3.2`.
 
 The Vite dev server exposes the frontend plus local `/api/metar` and `/api/pilot-analysis` middleware so local development matches the deployed app contract.
 
@@ -85,8 +84,8 @@ This route streams markdown text chunks over `text/event-stream` and is intended
 This repository is set up for static hosting plus a serverless function.
 
 - Frontend: Vite build output in `dist/`
-- API: [`api/metar.ts`](/home/tonyc/source/metarx/api/metar.ts)
-- Analysis API: [`api/pilot-analysis.ts`](/home/tonyc/source/metarx/api/pilot-analysis.ts)
+- API: [`api/metar.ts`](api/metar.ts)
+- Analysis API: [`api/pilot-analysis.ts`](api/pilot-analysis.ts)
 - Recommended target: Vercel
 
 The NOAA Aviation Weather endpoint at `https://aviationweather.gov/api/data/metar` is used as the source of truth. The proxy exists because NOAA currently does not advertise browser-safe CORS headers for direct client requests.

@@ -58,6 +58,9 @@ export function useMetarLookup({ onBeforeLookup }: UseMetarLookupOptions) {
       setCompareQuery(secondCode)
     }
     onBeforeLookup()
+    lookupAbortRef.current?.abort()
+    lookupAbortRef.current = null
+    lookupRequestIdRef.current += 1
 
     if (code.length !== 4) {
       setCompareResult(null)
@@ -87,11 +90,9 @@ export function useMetarLookup({ onBeforeLookup }: UseMetarLookupOptions) {
     setCompareResult(null)
     setStatus('loading')
     setErrorMessage('')
-    lookupAbortRef.current?.abort()
     const abortController = new AbortController()
     lookupAbortRef.current = abortController
-    const requestId = lookupRequestIdRef.current + 1
-    lookupRequestIdRef.current = requestId
+    const requestId = lookupRequestIdRef.current
 
     try {
       const [primaryPayload, secondaryPayload] = await Promise.all([

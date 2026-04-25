@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -511,6 +511,34 @@ describe('App', () => {
       expect(screen.queryByText('New York/JF Kennedy Intl, NY, US')).not.toBeInTheDocument()
     })
     expect(screen.getByText('Austin/Bergstrom Intl, TX, US')).toBeInTheDocument()
+  })
+
+  it('keeps an invalid lookup from being replaced by an older response', async () => {
+    const pendingLookup = createDeferredResponse()
+
+    vi.spyOn(window, 'fetch').mockImplementationOnce(() => pendingLookup.promise)
+
+    render(<App />)
+
+    const input = screen.getByLabelText('ICAO airport code')
+    await userEvent.type(input, 'kjfk')
+    await userEvent.click(screen.getByRole('button', { name: /decode metar/i }))
+
+    await userEvent.clear(input)
+    await userEvent.type(input, 'k')
+    fireEvent.submit(input.closest('form') as HTMLFormElement)
+
+    await screen.findByText('Lookup failed')
+    expect(screen.getByText('Enter a 4-letter ICAO airport code.')).toBeInTheDocument()
+
+    await act(async () => {
+      pendingLookup.resolve(createJsonResponse(createMetarPayload()))
+      await pendingLookup.promise
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByText('New York/JF Kennedy Intl, NY, US')).not.toBeInTheDocument()
+    expect(screen.getByText('Enter a 4-letter ICAO airport code.')).toBeInTheDocument()
   })
 
   it('cycles theme mode when the theme button is pressed', async () => {

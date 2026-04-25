@@ -72,6 +72,6 @@ New:
 
 ## Tests
 
-All 16 tests pass. Two test updates were needed:
+At the time of this redesign, the suite passed and two test updates were needed:
 - Button text changed from "Analyze METAR" to "Decode METAR"
 - Brand text changed from "MetarX" to "MX"
